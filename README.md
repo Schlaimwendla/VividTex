@@ -1,19 +1,52 @@
-# VividTeX 🖋️✨
+# VividTex 🚀
+A modern, real-time collaborative LaTeX editor. Write, compile, and sync your academic papers seamlessly across multiple devices and users.
 
-VividTeX is a modern, real-time collaborative LaTeX editor designed for seamless academic writing and high-performance synchronization. Built to handle complex projects like diploma theses, it bridges the gap between collaborative editing and local LaTeX power.
+## Features
+- **Real-Time Collaboration**: Work on `.tex` files together, just like Google Docs.
+- **Bi-directional SyncTeX**: Click in the PDF to jump to the code, or jump from the code to the PDF.
+- **Built-in Compiler**: Live PDF generation.
+- **Git Integration**: Built-in 1-click commit & push.
+- **Secure Self-Hosting**: Password-protected sessions, directory-traversal safe.
 
-### 🚀 Key Features
-*   Real-Time Collaboration: Powered by Hocuspocus (Yjs) for conflict-free, multi-user editing in a responsive UI.
-*   Live SyncTeX Integration: Click the PDF to jump to the code, or click the code to see exactly where it appears in the PDF—precision editing at its finest.
-*   On-the-Fly Compilation: Automated background compilation using latexmk ensures your PDF is always up to date.
-*   Git-Powered Versioning: Integrated Git support for committing changes and keeping your work safe and versioned.
-*   High-Performance Backend: A robust Node.js API manages the workspace, file structure, and compilation pipeline.
-*   Modern Frontend: A lightning-fast Vite + React frontend featuring a customized CodeMirror editor with specialized LaTeX syntax highlighting.
+## Quick Start (Manual)
+To get started locally or on your own server, clone the repository and start the services:
 
-### 🛠️ Tech Stack
-*   Frontend: React, Vite, CodeMirror 6, Axios.
-*   Backend: Node.js, Express, Hocuspocus, Yjs, Simple-Git.
-*   Tooling: SyncTeX, Latexmk, Systemd (for autostarting services).
+```bash
+# 1. Clone the repository
+git clone https://github.com/yourusername/VividTex.git
+cd VividTex
 
----
-Elevate your LaTeX workflow with VividTeX—where collaboration meets precision.
+# 2. Install dependencies & build frontend
+cd frontend
+npm install
+npm run build
+cd ..
+
+# 3. Install backend dependencies
+cd backend
+npm install
+
+# 4. Configure your instance (Optional)
+# Copy the example environment file and edit it to set your password and workspace path
+cp .env.example .env
+nano .env
+
+# 5. Start the service
+./backend/start.sh
+```
+The application will be accessible at `http://localhost:3001`.
+
+## Docker Installation 🐳
+VividTex fully supports Docker. Just set up your `.env` file first:
+```bash
+cp .env.example .env
+nano .env
+
+docker-compose up -d --build
+```
+Your instance will be securely available at `http://localhost:3001`.
+
+### Security Note 🔒
+When running on an untrusted network (like a school network), you should:
+1. Always define `VIVIDTEX_PASSWORD` to prevent unauthorized users from viewing or modifying files.
+2. Put VividTex behind a reverse proxy (like Nginx) and enable HTTPS.

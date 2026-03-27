@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2023) (preloaded format=pdflatex 2026.3.14)  26 MAR 2026 21:49
+This is pdfTeX, Version 3.141592653-2.6-1.40.25 (TeX Live 2023) (preloaded format=pdflatex 2026.3.14)  27 MAR 2026 11:38
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -28,7 +28,7 @@ File: l3backend-pdftex.def 2023-01-16 L3 backend support: PDF output (pdfTeX)
 \l__color_backend_stack_int=\count193
 \l__pdf_internal_box=\box51
 )
-No file main.aux.
+(./main.aux)
 \openout1 = `main.aux'.
 
 LaTeX Font Info:    Checking defaults for OML/cmm/m/it on input line 6.
@@ -51,12 +51,12 @@ LaTeX Font Info:    External font `cmex10' loaded for size
 (Font)              <8> on input line 7.
 LaTeX Font Info:    External font `cmex10' loaded for size
 (Font)              <6> on input line 7.
-[1
+ [1
 
 {/var/lib/texmf/fonts/map/pdftex/updmap/pdftex.map}] (./main.aux) ) 
 Here is how much of TeX's memory you used:
- 447 strings out of 476034
- 8355 string characters out of 5792864
+ 449 strings out of 476034
+ 8373 string characters out of 5792864
  1850388 words of memory out of 6000000
  20976 multiletter control sequences out of 15000+600000
  515927 words of font info for 44 fonts, out of 8000000 for 9000
@@ -67,7 +67,7 @@ texlive/texmf-dist/fonts/type1/public/amsfonts/cm/cmbx12.pfb></usr/share/texliv
 e/texmf-dist/fonts/type1/public/amsfonts/cm/cmr10.pfb></usr/share/texlive/texmf
 -dist/fonts/type1/public/amsfonts/cm/cmr12.pfb></usr/share/texlive/texmf-dist/f
 onts/type1/public/amsfonts/cm/cmr17.pfb>
-Output written on main.pdf (1 page, 43801 bytes).
+Output written on main.pdf (1 page, 43937 bytes).
 PDF statistics:
  28 PDF objects out of 1000 (max. 8388607)
  16 compressed objects within 1 object stream
