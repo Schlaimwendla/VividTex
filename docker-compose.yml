@@ -7,5 +7,7 @@ services:
       - "1234:1234" # WebSocket
     env_file:
       - .env
+    environment:
+      - VIVIDTEX_WORKDIR=/app/workspace
     volumes:
       - ${VIVIDTEX_WORKDIR:-./workspace}:/app/workspace

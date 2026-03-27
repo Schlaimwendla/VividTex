@@ -21,6 +21,12 @@ app.use(express.json({ limit: '50mb' }));
 
 app.use((req, res, next) => {
     if (req.method === 'OPTIONS') return next();
+    
+    // Allow static frontend files without authentication
+    if (req.path === '/' || req.path === '/index.html' || req.path.startsWith('/assets/') || req.path.startsWith('/favicon.') || req.path.startsWith('/pdfjs/')) {
+        return next();
+    }
+    
     if (process.env.VIVIDTEX_PASSWORD) {
         const authHeader = req.headers.authorization;
         const queryToken = req.query.token;
