@@ -132,14 +132,16 @@ function App() {
       }
       const res = await axios.post(`${API_URL}/api/compile`);
       if (res.data.success) {
-        setPdfUrl(`http://${window.location.host}/pdfjs/web/viewer.html?file=${encodeURIComponent(API_URL + '/api/pdf?t=' + Date.now())}#view=FitH&pagemode=none`);
+        const pwd = localStorage.getItem('vividtex-password') || '';
+        setPdfUrl(`http://${window.location.host}/pdfjs/web/viewer.html?file=${encodeURIComponent(API_URL + '/api/pdf?t=' + Date.now() + '&token=' + pwd)}#view=FitH&pagemode=none`);
       }
     } catch (e) { console.error("Compilation failed", e); }
     finally { setIsCompiling(false); }
   };
 
   const handleDownloadPdf = () => {
-    if (pdfUrl) window.open(`${API_URL}/api/pdf`, '_blank');
+    const pwd = localStorage.getItem('vividtex-password') || '';
+    if (pdfUrl) window.open(`${API_URL}/api/pdf?token=${pwd}`, '_blank');
   };
 
   const handleGitCommit = async () => {
@@ -390,12 +392,12 @@ function App() {
             <div className="cm-editor" ref={editorContainerRef} style={{ display: /\.(png|jpe?g|gif|svg|webp|pdf)$/i.test(activeFile) ? 'none' : 'flex' }}></div>
             {/\.(png|jpe?g|gif|svg|webp)$/i.test(activeFile) && (
               <div className="image-viewer-container">
-                <img src={`${API_URL}/static/${activeFile}`} alt={activeFile} />
+                <img src={`${API_URL}/static/${activeFile}?token=${localStorage.getItem('vividtex-password') || ''}`} alt={activeFile} />
               </div>
             )}
             {/\.pdf$/i.test(activeFile) && (
                <div className="pdf-viewer-container">
-                  <iframe className="pdf-frame" src={`http://${window.location.host}/pdfjs/web/viewer.html?file=${encodeURIComponent(API_URL + '/static/' + activeFile)}#view=FitH&pagemode=none`} />
+                  <iframe className="pdf-frame" src={`http://${window.location.host}/pdfjs/web/viewer.html?file=${encodeURIComponent(API_URL + '/static/' + activeFile + '?token=' + (localStorage.getItem('vividtex-password') || ''))}#view=FitH&pagemode=none`} />
                </div>
             )}
           </section>
