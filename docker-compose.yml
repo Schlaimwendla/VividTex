@@ -1,0 +1,11 @@
+services:
+  vividtex:
+    build: .
+    container_name: vividtex
+    ports:
+      - "3001:3001" # Backend API
+      - "1234:1234" # WebSocket
+    env_file:
+      - .env
+    volumes:
+      - ${VIVIDTEX_WORKDIR:-./workspace}:/app/workspace

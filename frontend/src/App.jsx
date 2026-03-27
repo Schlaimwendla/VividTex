@@ -8,6 +8,28 @@ import { yCollab } from 'y-codemirror.next';
 import axios from 'axios';
 import './App.css';
 
+axios.interceptors.request.use(config => {
+  const pwd = localStorage.getItem('vividtex-password');
+  if (pwd) {
+    config.headers.Authorization = `Bearer ${pwd}`;
+  }
+  return config;
+});
+
+axios.interceptors.response.use(
+  response => response,
+  error => {
+    if (error.response && error.response.status === 401) {
+      const pwd = prompt("Password required for backend access:");
+      if (pwd) {
+        localStorage.setItem('vividtex-password', pwd);
+        window.location.reload();
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 const addHighlight = StateEffect.define();
 const removeHighlight = StateEffect.define();
 
@@ -48,8 +70,6 @@ function App() {
   const [isResizing, setIsResizing] = useState(false);
   const [currentWorkdir, setCurrentWorkdir] = useState('');
   const [isGitRepo, setIsGitRepo] = useState(false);
-  const [isWorkspaceModalOpen, setIsWorkspaceModalOpen] = useState(false);
-  const [workspaceInput, setWorkspaceInput] = useState('');
 
   const editorContainerRef = useRef(null);
   const editorViewRef = useRef(null);
@@ -86,30 +106,6 @@ function App() {
       const res = await axios.get(`${API_URL}/api/git/status`);
       setIsGitRepo(res.data.isRepo);
     } catch (e) { console.error("Failed to load git status", e); }
-  };
-
-  const handleChangeWorkspace = () => {
-    setWorkspaceInput(currentWorkdir);
-    setIsWorkspaceModalOpen(true);
-  };
-
-  const submitChangeWorkspace = async () => {
-    setIsWorkspaceModalOpen(false);
-    const newPath = workspaceInput;
-    if (!newPath || newPath === currentWorkdir) return;
-    try {
-      const res = await axios.post(`${API_URL}/api/config`, { workdir: newPath });
-      if (res.data.success) {
-        setCurrentWorkdir(res.data.workdir);
-        fetchTree();
-        fetchGitStatus();
-        setActiveFile('main.tex'); // reset to default main
-        alert("✅ Workspace updated to: " + res.data.workdir);
-      }
-    } catch (e) {
-      console.error("Failed to update workspace", e);
-      alert("❌ Failed to update workspace: " + (e.response?.data || e.message));
-    }
   };
 
   const handleFileUpload = async (e) => {
@@ -271,6 +267,7 @@ function App() {
         url: WS_URL,
         name: docName,
         document: ydoc,
+        token: localStorage.getItem('vividtex-password'),
         onStatus: ({ status: s }) => {
           if (ignore) return;
           if (s === 'connected') setStatus('Connected');
@@ -353,26 +350,6 @@ function App() {
   return (
     <div className="app-container">
       {isResizing && <div className="resize-overlay" />}
-      {isWorkspaceModalOpen && (
-        <div className="modal-overlay">
-          <div className="modal-content">
-            <h3>Change Workspace</h3>
-            <p>Enter the absolute path to your LaTeX project folder:</p>
-            <input 
-              type="text" 
-              className="modal-input"
-              value={workspaceInput} 
-              onChange={(e) => setWorkspaceInput(e.target.value)} 
-              onKeyDown={(e) => e.key === 'Enter' && submitChangeWorkspace()}
-              autoFocus 
-            />
-            <div className="modal-actions">
-              <button className="btn-secondary" onClick={() => setIsWorkspaceModalOpen(false)}>Cancel</button>
-              <button className="btn-primary" onClick={submitChangeWorkspace}>Update</button>
-            </div>
-          </div>
-        </div>
-      )}
       <header className="header">
         <div className="header-left">
 
@@ -388,7 +365,6 @@ function App() {
           </div>
         </div>
         <div className="header-actions">
-          <button className="btn-secondary" onClick={handleChangeWorkspace} title={currentWorkdir}>📂 Workspace</button>
           <button className="btn-secondary" onClick={handleDownloadPdf} disabled={!pdfUrl}>⬇️ Download</button>
           {isGitRepo && <button className="btn-secondary" onClick={handleGitCommit}>💾 Commit</button>}
           <button className="btn-primary" onClick={handleCompile} disabled={isCompiling}>
