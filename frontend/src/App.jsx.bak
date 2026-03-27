@@ -1,0 +1,323 @@
+import { useEffect, useRef, useState } from 'react';
+import * as Y from 'yjs';
+import { HocuspocusProvider } from '@hocuspocus/provider';
+import { EditorState, StateField, StateEffect, allowMultipleSelections } from '@codemirror/state';
+import { EditorView, lineNumbers, keymap, Decoration, highlightActiveLineGutter, drawSelection, dropCursor, rectangularSelection, crosshairCursor } from '@codemirror/view';
+import { history, historyKeymap, indentOnInput, bracketMatching } from '@codemirror/language';
+import { defaultKeymap } from '@codemirror/commands';
+import { closeBrackets, closeBracketsKeymap } from '@codemirror/autocomplete';
+import { linter, lintGutter } from '@codemirror/lint';
+import { yCollab } from 'y-codemirror.next';
+import axios from 'axios';
+import './App.css';
+
+const HOST = window.location.hostname;
+const API_URL = `http://${HOST}:3001`;
+const WS_URL = `ws://${HOST}:1234`;
+
+const userColors = ['#ff0055', '#00ff00', '#00d5ff', '#ffaa00', '#c800ff', '#ffff00'];
+const myColor = userColors[Math.floor(Math.random() * userColors.length)];
+
+const addLineHighlight = StateEffect.define();
+const removeLineHighlight = StateEffect.define();
+const lineHighlightMark = Decoration.line({ attributes: { class: "cm-highlight-line" } });
+const lineHighlightField = StateField.define({
+  create() { return Decoration.none; },
+  update(lines, tr) {
+    lines = lines.map(tr.changes);
+    for (let e of tr.effects) {
+      if (e.is(addLineHighlight)) lines = lines.update({ add: [lineHighlightMark.range(e.value, e.value)] });
+      else if (e.is(removeLineHighlight)) lines = lines.update({ filter: () => false });
+    }
+    return lines;
+  },
+  provide: f => EditorView.decorations.from(f)
+});
+
+function App() {
+  const editorContainerRef = useRef(null);
+  const editorViewRef = useRef(null);
+  const providerRef = useRef(null);
+  const [pdfUrl, setPdfUrl] = useState(null);
+  const [status, setStatus] = useState('Disconnected');
+  const [isCompiling, setIsCompiling] = useState(false);
+  const [fileTree, setFileTree] = useState([]);
+  const [activeFile, setActiveFile] = useState('main.tex');
+  const [connectedUsers, setConnectedUsers] = useState([]);
+  const activeFileRef = useRef('main.tex');
+  const [compileErrors, setCompileErrors] = useState([]);
+  const compileErrorsRef = useRef([]);
+
+  useEffect(() => {
+    compileErrorsRef.current = compileErrors;
+    if (editorViewRef.current) {
+      editorViewRef.current.dispatch({ changes: { from: 0, to: 0, insert: "" } });
+    }
+  }, [compileErrors]);
+
+  useEffect(() => {
+    let name = localStorage.getItem('collab-username');
+    if (!name) {
+      name = prompt("Enter your name for collaboration:") || `User-${Math.floor(Math.random() * 1000)}`;
+      localStorage.setItem('collab-username', name);
+    }
+    fetchTree();
+
+    const handleMessage = async (e) => {
+      if (e.data && e.data.type === 'synctex-inverse') {
+        try {
+          const res = await axios.post(`${API_URL}/api/synctex/edit`, { page: e.data.page, x: e.data.x, y: e.data.y });
+          if (res.data && res.data.file) setActiveFile(res.data.file);
+        } catch (err) { console.warn('Inverse SyncTeX failed', err); }
+      }
+    };
+    window.addEventListener('message', handleMessage);
+    return () => window.removeEventListener('message', handleMessage);
+  }, []);
+
+  useEffect(() => { activeFileRef.current = activeFile; }, [activeFile]);
+
+  const fetchTree = async () => {
+    try {
+      const res = await axios.get(`${API_URL}/api/tree`);
+      setFileTree(res.data);
+    } catch (e) { console.error("Failed to load file tree", e); }
+  };
+
+  const handleCompile = async () => {
+    if (!activeFile) return;
+    setIsCompiling(true);
+    setCompileErrors([]);
+    try {
+      if (providerRef.current) {
+        const currentContent = providerRef.current.document.getText('codemirror').toString();
+        await axios.post(`${API_URL}/api/file?path=${encodeURIComponent(activeFile)}`, { content: currentContent });
+      }
+      const res = await axios.post(`${API_URL}/api/compile`);
+      if (res.data.success) {
+        setPdfUrl(`http://${window.location.host}/pdfjs/web/viewer.html?file=${encodeURIComponent(API_URL + '/api/pdf?t=' + Date.now())}#view=FitH&pagemode=none`);
+      } else {
+        parseErrors(res.data.stdout || '' + res.data.stderr || '');
+      }
+    } catch (error) { 
+      const output = (error.response?.data?.stdout || '') + (error.response?.data?.stderr || '');
+      parseErrors(output);
+      alert('Compilation failed!'); 
+    }
+    finally { setIsCompiling(false); }
+  };
+
+  const handleDownloadPdf = () => {
+    if (!pdfUrl) return;
+    window.open(`${API_URL}/api/pdf?t=${Date.now()}`, '_blank');
+  };
+
+  const handleGitCommit = async () => {
+    try {
+      if (providerRef.current) {
+          const currentContent = providerRef.current.document.getText('codemirror').toString();
+          await axios.post(`${API_URL}/api/file?path=${encodeURIComponent(activeFile)}`, {
+              content: currentContent
+          });
+      }
+      const res = await axios.post(`${API_URL}/api/git/commit`, { message: 'Auto-commit from collaborative editor' });
+      if (res.data.success) { alert('Git commit successful!'); }
+    } catch (error) { alert('Git commit failed.'); }
+  };
+
+  const parseErrors = (output) => {
+    const errors = [];
+    const lines = output.split('\n');
+    let currentError = null;
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (line.startsWith('! ')) {
+            currentError = { message: line.substring(2), line: 1 };
+        } else if (currentError && line.match(/^l\.(\d+)/)) {
+            const match = line.match(/^l\.(\d+)/);
+            currentError.line = parseInt(match[1], 10);
+            errors.push(currentError);
+            currentError = null;
+        }
+    }
+    setCompileErrors(errors);
+  };
+
+  useEffect(() => {
+    if (!activeFile) return;
+    const isMedia = /\.(png|jpe?g|gif|svg|webp|pdf)$/i.test(activeFile) && activeFile !== 'main.pdf';
+    if (isMedia) {
+      if (editorContainerRef.current) editorContainerRef.current.innerHTML = '';
+      return;
+    }
+
+    let view;
+    let hpProvider;
+    const initEditor = async () => {
+      let diskContent = '';
+      try {
+        const res = await axios.get(`${API_URL}/api/file?path=${encodeURIComponent(activeFile)}`);
+        diskContent = res.data;
+      } catch (e) { console.warn('Failed to load file content from disk', e); }
+
+      const docName = `latex-${encodeURIComponent(activeFile)}`;
+      const ydoc = new Y.Doc();
+      hpProvider = new HocuspocusProvider({
+        url: WS_URL,
+        name: docName,
+        document: ydoc,
+      });
+      providerRef.current = hpProvider;
+
+      const ytext = ydoc.getText('codemirror');
+
+      const seedDocument = () => {
+        if (ytext.toString() === '' && diskContent) {
+          ytext.insert(0, diskContent);
+        }
+        if (editorViewRef.current) {
+          const currentViewDoc = editorViewRef.current.state.doc.toString();
+          if (ytext.toString() !== currentViewDoc) {
+              editorViewRef.current.dispatch({
+                  changes: { from: 0, to: currentViewDoc.length, insert: ytext.toString() }
+              });
+          }
+        }
+      };
+
+      if (hpProvider.synced) seedDocument();
+      else hpProvider.once('synced', seedDocument);
+
+      hpProvider.on('status', ({ status: s }) => {
+        if (s === 'connected') setStatus('Connected');
+        else if (s === 'connecting') setStatus('Connecting...');
+        else setStatus('Disconnected');
+      });
+      if (hpProvider.status === 'connected') setStatus('Connected');
+
+      hpProvider.on('awarenessChange', () => {
+        const states = Array.from(hpProvider.awareness.getStates().values());
+        setConnectedUsers(states.map(s => s.user).filter(u => u && u.name));
+      });
+
+      hpProvider.awareness.setLocalStateField('user', {
+        name: localStorage.getItem('collab-username') || 'Anonymous',
+        color: myColor,
+      });
+
+      const latexLinter = linter(view => compileErrorsRef.current.map(err => ({
+          from: view.state.doc.line(Math.min(err.line, view.state.doc.lines)).from,
+          to: view.state.doc.line(Math.min(err.line, view.state.doc.lines)).to,
+          severity: "error", message: err.message
+      })));
+
+      const state = EditorState.create({
+        doc: ytext.toString(),
+        extensions: [
+          lineNumbers(),
+          highlightActiveLineGutter(),
+          history(),
+          drawSelection(),
+          dropCursor(),
+          allowMultipleSelections.of(true),
+          indentOnInput(),
+          bracketMatching(),
+          closeBrackets(),
+          rectangularSelection(),
+          crosshairCursor(),
+          latexLinter,
+          lintGutter(),
+          EditorView.lineWrapping,
+          lineHighlightField,
+          keymap.of([
+            ...defaultKeymap,
+            ...historyKeymap,
+            ...closeBracketsKeymap,
+            { key: 'Ctrl-j', run: (view) => {
+              const pos = view.state.selection.main.head;
+              const line = view.state.doc.lineAt(pos).number;
+              axios.post(`${API_URL}/api/synctex/view`, { file: activeFileRef.current, line: line }).then(res => {
+                const iframe = document.querySelector('.pdf-frame');
+                if (iframe && iframe.contentWindow) iframe.contentWindow.postMessage({ type: 'synctex-forward', ...res.data }, '*');
+              });
+              return true;
+            }}
+          ]),
+          yCollab(ytext, hpProvider.awareness, { undoManager: new Y.UndoManager(ytext) })
+        ],
+      });
+
+      if (editorContainerRef.current) {
+        editorContainerRef.current.innerHTML = '';
+        view = new EditorView({ state, parent: editorContainerRef.current });
+        editorViewRef.current = view;
+      }
+    };
+    initEditor();
+    return () => {
+      if (hpProvider) hpProvider.destroy();
+      if (view) view.destroy();
+    };
+  }, [activeFile]);
+
+  const renderTree = (nodes) => nodes.map(node => (
+    node.type === 'directory' ? (
+      <div key={node.path} className="folder-wrapper">
+        <div className="folder-item">📂 {node.name}</div>
+        <div className="folder-children">{renderTree(node.children)}</div>
+      </div>
+    ) : (
+      <div key={node.path} className={`file-item ${activeFile === node.path ? 'active' : ''}`} onClick={() => setActiveFile(node.path)}>
+        📄 {node.name}
+      </div>
+    )
+  ));
+
+  return (
+    <div className="app-container">
+      <header className="header">
+        <div className="header-left">
+          <span className="header-title">LaTeX Collab</span>
+          <span className="status-badge"><span className={`status-dot ${status.toLowerCase().replace('...', '')}`}></span>{status}</span>
+          <div className="connected-users-list">
+            {connectedUsers.map((u, i) => (
+              <div key={i} className="user-pill" style={{ backgroundColor: u.color, color: '#fff' }}>👤 {u.name}</div>
+            ))}
+          </div>
+        </div>
+        <div className="header-actions">
+          <button className="btn-secondary" onClick={handleDownloadPdf} disabled={!pdfUrl}>⬇️ Download</button>
+          <button className="btn-secondary" onClick={handleGitCommit}>💾 Commit</button>
+          <button className="btn-primary" onClick={handleCompile} disabled={isCompiling}>
+            {isCompiling ? '⚙️ Compiling...' : '🚀 Compile PDF'}
+          </button>
+        </div>
+      </header>
+      <main className="main-content">
+        <aside className="sidebar panel">
+          <div className="sidebar-header">Explorer</div>
+          <div className="file-tree">{renderTree(fileTree)}</div>
+        </aside>
+        <section className="editor-pane panel">
+          <div className="editor-header">{activeFile}</div>
+          <div className="cm-editor" ref={editorContainerRef} style={{ display: /\.(png|jpe?g|gif|svg|webp|pdf)$/i.test(activeFile) && activeFile !== 'main.pdf' ? 'none' : 'flex' }}></div>
+          {/\.(png|jpe?g|gif|svg|webp)$/i.test(activeFile) && (
+            <div className="image-viewer-container">
+              <img src={`${API_URL}/static/${activeFile}`} alt={activeFile} />
+            </div>
+          )}
+          {/\.pdf$/i.test(activeFile) && activeFile !== 'main.pdf' && (
+             <div className="pdf-viewer-container">
+                <iframe className="pdf-frame" src={`http://${window.location.host}/pdfjs/web/viewer.html?file=${encodeURIComponent(API_URL + '/static/' + activeFile)}#view=FitH&pagemode=none`} />
+             </div>
+          )}
+        </section>
+        <aside className="pdf-pane panel">
+          {pdfUrl ? <iframe className="pdf-frame" src={pdfUrl} title="PDF Preview" /> : <div className="pdf-placeholder">Click Compile to preview PDF</div>}
+        </aside>
+      </main>
+    </div>
+  );
+}
+
+export default App;
