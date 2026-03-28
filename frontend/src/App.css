@@ -930,6 +930,87 @@ body.resizing-pane iframe {
   gap: 10px;
 }
 
+.git-auth-panel {
+  border: 1px solid var(--border-color);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 12px;
+}
+
+.git-auth-panel-inline {
+  margin-bottom: 4px;
+}
+
+.git-auth-header-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.git-auth-header-row h4 {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 0;
+}
+
+.git-auth-badge {
+  font-size: 0.72rem;
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.12);
+  border: 1px solid rgba(34, 197, 94, 0.24);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+
+.git-auth-help {
+  margin: 0 0 10px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  line-height: 1.4;
+}
+
+.git-auth-help-secondary {
+  margin-top: 10px;
+  margin-bottom: 0;
+}
+
+.git-auth-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.git-auth-token-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.git-auth-token-row .modal-input {
+  margin-bottom: 0;
+  flex: 1;
+}
+
+.git-auth-fields .modal-input {
+  margin-bottom: 0;
+}
+
+.git-auth-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.git-auth-note {
+  margin: 10px 0 0;
+  color: #22c55e;
+  font-size: 0.76rem;
+}
+
 .git-commit-input {
   width: 100%;
   background: var(--bg-color);
@@ -1013,8 +1094,13 @@ body.resizing-pane iframe {
 
 .git-log-item {
   display: flex;
-  gap: 12px;
+  gap: 8px;
   padding: 0;
+  min-height: 20px;
+}
+
+.git-log-item.git-log-graph-only {
+  min-height: 14px;
 }
 
 .git-log-graph {
@@ -1024,6 +1110,34 @@ body.resizing-pane iframe {
   width: 16px;
   flex-shrink: 0;
   padding-top: 6px;
+}
+
+.git-log-graph-text {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 0.75rem;
+  line-height: 1.2;
+  color: #8b5cf6;
+  margin: 0;
+  white-space: pre;
+  flex-shrink: 0;
+  user-select: none;
+}
+
+.git-log-dot-inline {
+  color: #8b5cf6;
+  font-size: 0.85rem;
+}
+
+.git-log-refs {
+  display: inline-block;
+  background: rgba(139, 92, 246, 0.2);
+  border: 1px solid rgba(139, 92, 246, 0.4);
+  color: #a78bfa;
+  font-size: 0.68rem;
+  padding: 1px 6px;
+  border-radius: 3px;
+  margin-right: 6px;
+  font-family: 'JetBrains Mono', monospace;
 }
 
 .git-log-dot {

@@ -39,7 +39,29 @@ const generateKey = () => crypto.randomBytes(16).toString('hex');
 // ─── APP SETUP ───────────────────────────────────────────
 
 const app = express();
-app.use(cors());
+const ALLOWED_CORS_ORIGINS = (process.env.VIVIDTEX_CORS_ORIGINS || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+
+app.use(cors({
+    origin: (origin, callback) => {
+        if (!origin) return callback(null, true);
+        if (
+            origin === 'http://localhost:5173'
+            || origin === 'http://127.0.0.1:5173'
+            || origin === 'http://localhost:3001'
+            || origin === 'http://127.0.0.1:3001'
+        ) {
+            return callback(null, true);
+        }
+        if (ALLOWED_CORS_ORIGINS.includes(origin)) {
+            return callback(null, true);
+        }
+        // Do not throw, otherwise disallowed origins become 500 responses.
+        return callback(null, false);
+    }
+}));
 app.use(express.json({ limit: '5mb' }));
 
 // Security headers
@@ -48,6 +70,7 @@ app.use((req, res, next) => {
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
     res.setHeader('X-XSS-Protection', '1; mode=block');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
     next();
 });
 
@@ -232,8 +255,8 @@ app.get('/api/admin/groups', requireAdmin, (req, res) => {
 // Create a group (admin only)
 app.post('/api/admin/groups', requireAdmin, (req, res) => {
     const { name, projects } = req.body;
-    if (!name || typeof name !== 'string' || name.trim().length === 0 || name.length > 50) {
-        return res.status(400).json({ error: 'Valid group name is required (max 50 chars)' });
+    if (!name || typeof name !== 'string' || name.trim().length === 0 || name.length > 50 || !/^[a-zA-Z0-9 _-]+$/.test(name.trim())) {
+        return res.status(400).json({ error: 'Valid group name required (alphanumeric, spaces, hyphens, underscores; max 50 chars)' });
     }
     const data = loadGroups();
     if (data.groups[name.trim()]) {
@@ -393,7 +416,7 @@ app.get('/api/projects/:name/export', (req, res) => {
 
 // Import a project from zip
 const zipUpload = multer({ dest: '/tmp/vividtex-uploads/', limits: { fileSize: 100 * 1024 * 1024 } });
-app.post('/api/projects/import', zipUpload.single('file'), (req, res) => {
+app.post('/api/projects/import', rateLimit(10, 3600000), zipUpload.single('file'), (req, res) => {
     if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
 
     let projectName = req.body.name || path.basename(req.file.originalname, '.zip');
@@ -417,7 +440,7 @@ app.post('/api/projects/import', zipUpload.single('file'), (req, res) => {
         fs.mkdirSync(finalDir, { recursive: true });
 
         // Extract zip using Node.js built-in or execFile unzip
-        execFile('unzip', ['-o', req.file.path, '-d', finalDir], (error) => {
+        execFile('unzip', ['-o', req.file.path, '-d', finalDir], { timeout: 60000 }, (error) => {
             // Clean up temp file
             try { fs.unlinkSync(req.file.path); } catch (_) {}
             if (error) {
@@ -585,6 +608,8 @@ app.get('/api/projects/:name/file', (req, res) => {
 app.post('/api/projects/:name/file', (req, res) => {
     const { name } = req.params;
     if (!isValidProjectName(name)) return res.status(400).send('Invalid project name');
+    if (!req.query.path || typeof req.query.path !== 'string') return res.status(400).json({ error: 'Missing file path' });
+    if (!req.body || typeof req.body.content !== 'string') return res.status(400).json({ error: 'Missing file content' });
     try {
         const projectDir = getProjectDir(name);
         const filePath = safeJoin(projectDir, req.query.path);
@@ -593,7 +618,7 @@ app.post('/api/projects/:name/file', (req, res) => {
         fs.writeFileSync(filePath, req.body.content);
         res.json({ success: true });
     } catch (e) {
-        res.status(403).send('Forbidden');
+        res.status(500).json({ error: 'Failed to save file' });
     }
 });
 
@@ -638,7 +663,7 @@ app.post('/api/projects/:name/folder', (req, res) => {
 // Upload files to project (supports folder structure via paths field)
 const tmpUpload = multer({ dest: os.tmpdir(), limits: { fileSize: 50 * 1024 * 1024, files: 50 } });
 
-app.post('/api/projects/:name/upload', tmpUpload.array('files', 50), (req, res) => {
+app.post('/api/projects/:name/upload', rateLimit(30, 3600000), tmpUpload.array('files', 50), (req, res) => {
     const { name } = req.params;
     if (!isValidProjectName(name)) return res.status(400).json({ error: 'Invalid project name' });
     if (!req.files || req.files.length === 0) {
@@ -697,7 +722,7 @@ app.post('/api/projects/:name/move', (req, res) => {
 });
 
 // Compile project
-app.post('/api/projects/:name/compile', (req, res) => {
+app.post('/api/projects/:name/compile', rateLimit(30, 3600000), (req, res) => {
     const { name } = req.params;
     if (!isValidProjectName(name)) return res.status(400).json({ error: 'Invalid project name' });
     try {
@@ -708,21 +733,24 @@ app.post('/api/projects/:name/compile', (req, res) => {
         const mainTexBasename = path.basename(mainTexFile);
         const compileDir = getMainTexDir(projectDir, mainTexFile);
         const pdfName = getPdfName(mainTexFile);
-        execFile('latexmk', ['-pdf', '-synctex=1', '-interaction=nonstopmode', '-f', '-pdflatex=pdflatex --no-shell-escape %O %S', mainTexBasename], { cwd: compileDir }, (error, stdout, stderr) => {
+        execFile('latexmk', ['-pdf', '-synctex=1', '-interaction=nonstopmode', '-f', '-pdflatex=pdflatex --no-shell-escape %O %S', mainTexBasename], { cwd: compileDir, timeout: 120000 }, (error, stdout, stderr) => {
             const pdfPath = path.join(compileDir, pdfName);
             if (error && !fs.existsSync(pdfPath)) {
                 console.error('Compilation Error:', error);
+                // Return log output so users can debug their LaTeX, but strip absolute paths
+                const safeStdout = (stdout || '').replaceAll(compileDir, '.').replaceAll(projectDir, '.');
+                const safeStderr = (stderr || '').replaceAll(compileDir, '.').replaceAll(projectDir, '.');
                 return res.status(500).json({ 
                     success: false, 
                     message: 'Failed to compile LaTeX',
-                    error: error.message,
-                    stdout,
-                    stderr 
+                    stdout: safeStdout,
+                    stderr: safeStderr 
                 });
             }
             if (error) console.warn('Compilation completed with warnings:', error.message);
-            console.log('Compilation successful:', stdout);
-            res.json({ success: true, stdout, stderr, mainFile: mainTexFile, pdfName });
+            const safeStdout = (stdout || '').replaceAll(compileDir, '.').replaceAll(projectDir, '.');
+            const safeStderr = (stderr || '').replaceAll(compileDir, '.').replaceAll(projectDir, '.');
+            res.json({ success: true, stdout: safeStdout, stderr: safeStderr, mainFile: mainTexFile, pdfName });
         });
     } catch (e) {
         res.status(500).json({ error: e.message });
@@ -754,9 +782,10 @@ app.post('/api/projects/:name/synctex/view', (req, res) => {
     if (!isValidProjectName(name)) return res.status(400).send('Invalid project name');
     const { line, column, file } = req.body;
     if (!line || !file) return res.status(400).send('Missing line or file');
-    const safeFile = file.replace(/^(\.\.[\/\\])+/, '');
     try {
         const projectDir = getProjectDir(name);
+        // Validate file path stays within project
+        const safeFile = path.relative(projectDir, safeJoin(projectDir, file));
         const mainTexFile = detectMainTexFile(projectDir);
         const compileDir = getMainTexDir(projectDir, mainTexFile);
         const pdfName = getPdfName(mainTexFile);
@@ -764,7 +793,7 @@ app.post('/api/projects/:name/synctex/view', (req, res) => {
         const mainDir = path.dirname(mainTexFile);
         const relFile = mainDir === '.' ? safeFile : path.relative(mainDir, safeFile);
         const col = column || 0;
-        execFile('synctex', ['view', '-i', `${line}:${col}:${relFile}`, '-o', pdfName], { cwd: compileDir }, (error, stdout) => {
+        execFile('synctex', ['view', '-i', `${line}:${col}:${relFile}`, '-o', pdfName], { cwd: compileDir, timeout: 15000 }, (error, stdout) => {
             if (error) return res.status(500).json({ error: error.message });
             const pageMatch = stdout.match(/Page:(\d+)/);
             const xMatch = stdout.match(/x:([\d.]+)/);
@@ -799,7 +828,7 @@ app.post('/api/projects/:name/synctex/edit', (req, res) => {
         const mainTexFile = detectMainTexFile(projectDir);
         const compileDir = getMainTexDir(projectDir, mainTexFile);
         const pdfName = getPdfName(mainTexFile);
-        execFile('synctex', ['edit', '-o', `${page}:${x}:${y}:${pdfName}`], { cwd: compileDir }, (error, stdout) => {
+        execFile('synctex', ['edit', '-o', `${page}:${x}:${y}:${pdfName}`], { cwd: compileDir, timeout: 15000 }, (error, stdout) => {
             if (error) return res.status(500).json({ error: error.message });
             const fileMatch = stdout.match(/Input:([^\n]+)/);
             const lineMatch = stdout.match(/Line:(\d+)/);
@@ -828,12 +857,109 @@ const isValidGitUrl = (url) => {
     return /^https?:\/\/[^\s]+$/i.test(url) || /^git@[^\s:]+:[^\s]+$/i.test(url);
 };
 
+const GIT_HTTP_USERNAME = process.env.VIVIDTEX_GIT_USERNAME || '';
+const GIT_HTTP_TOKEN = process.env.VIVIDTEX_GIT_TOKEN || process.env.VIVIDTEX_GIT_PASSWORD || '';
+
+const isHttpsGitUrl = (url) => /^https?:\/\//i.test(url || '');
+
+const normalizeGitCredential = (value) => {
+    if (typeof value !== 'string') return '';
+    return value.trim().slice(0, 500);
+};
+
+const getGitCredentials = (req) => {
+    const headerUsername = normalizeGitCredential(req.get('x-vividtex-git-username'));
+    const headerToken = normalizeGitCredential(req.get('x-vividtex-git-token'));
+    const token = headerToken || GIT_HTTP_TOKEN;
+    const username = headerUsername || GIT_HTTP_USERNAME || (token ? 'git' : '');
+    return { username, token, fromRequest: !!(headerUsername || headerToken) };
+};
+
+const buildAuthenticatedGitUrl = (url, credentials = {}) => {
+    const username = credentials.username || GIT_HTTP_USERNAME || '';
+    const token = credentials.token || GIT_HTTP_TOKEN || '';
+    if (!isHttpsGitUrl(url) || !username || !token) return url;
+    try {
+        const parsed = new URL(url);
+        if (parsed.password) return url;
+        if (!parsed.username) parsed.username = username;
+        parsed.password = token;
+        return parsed.toString();
+    } catch (_) {
+        return url;
+    }
+};
+
+const sanitizeGitMessage = (message, credentials = {}) => {
+    if (!message) return 'Unknown git error';
+    let sanitized = String(message).replace(/https?:\/\/([^@\s]+)@/gi, 'https://***@');
+    [GIT_HTTP_USERNAME, GIT_HTTP_TOKEN, credentials.username, credentials.token].filter(Boolean).forEach((secret) => {
+        sanitized = sanitized.split(secret).join('***');
+    });
+    return sanitized;
+};
+
+const isGitAuthFailure = (message) => {
+    const text = String(message || '').toLowerCase();
+    return text.includes('authentication')
+        || text.includes('could not read username')
+        || text.includes('terminal prompts disabled')
+        || text.includes('permission denied (publickey)')
+        || text.includes('permission denied');
+};
+
+const isGitPermissionFailure = (message) => {
+    const text = String(message || '').toLowerCase();
+    return (text.includes('permission to ') && text.includes(' denied to '))
+        || text.includes('requested url returned error: 403')
+        || text.includes('write access to repository not granted')
+        || text.includes('not allowed to push to this repository');
+};
+
+const getGitAuthHint = (action, remoteUrl, credentials = {}) => {
+    const verb = action.charAt(0).toUpperCase() + action.slice(1);
+    if (isHttpsGitUrl(remoteUrl)) {
+        if (credentials.username && credentials.token) {
+            return `${verb} failed: Remote authentication was rejected. Check the Git username and personal access token saved in this browser.`;
+        }
+        if (GIT_HTTP_USERNAME && GIT_HTTP_TOKEN) {
+            return `${verb} failed: Remote authentication was rejected. Check the configured server fallback credentials.`;
+        }
+        return `${verb} failed: Remote authentication required. Open Git Credentials in VividTex and enter your own Git username and personal access token.`;
+    }
+    return `${verb} failed: Remote authentication required. For SSH remotes, make an SSH key available inside the container or switch the remote to HTTPS with a token.`;
+};
+
+const getGitPermissionHint = (action, remoteUrl) => {
+    const verb = action.charAt(0).toUpperCase() + action.slice(1);
+    if (action === 'push') {
+        return `${verb} failed: Your token authenticated successfully but does not have write access to this repository. Most likely your Personal Access Token is missing the required scope — for a classic PAT make sure the "repo" scope is checked; for a fine-grained PAT set "Contents" to "Read and write". If you are not the owner, ask to be added as a collaborator.`;
+    }
+    if (isHttpsGitUrl(remoteUrl)) {
+        return `${verb} failed: Your Git account authenticated successfully, but it does not have access to this repository. Check repository permissions and org SSO authorization.`;
+    }
+    return `${verb} failed: The current Git identity does not have access to this repository.`;
+};
+
+const getGitRemoteInfo = async (projectGit, credentials = {}, preferredName = 'origin') => {
+    const remotes = await projectGit.getRemotes(true);
+    if (!remotes.length) return null;
+    const remote = remotes.find((entry) => entry.name === preferredName) || remotes[0];
+    const remoteUrl = remote.refs.push || remote.refs.fetch || '';
+    return {
+        name: remote.name,
+        url: remoteUrl,
+        authUrl: buildAuthenticatedGitUrl(remoteUrl, credentials),
+    };
+};
+
 // Clone a git repo as a new project
 app.post('/api/projects/git-clone', async (req, res) => {
     const { url, name, branch } = req.body;
     if (!url || !isValidGitUrl(url)) {
         return res.status(400).json({ error: 'Invalid git URL. Use HTTPS or SSH format.' });
     }
+    const gitCredentials = getGitCredentials(req);
 
     // Derive project name from URL or use provided name
     let projectName = name || url.split('/').pop().replace(/\.git$/, '');
@@ -849,10 +975,10 @@ app.post('/api/projects/git-clone', async (req, res) => {
         }
 
         const projectDir = getProjectDir(finalName);
-        const cloneOpts = ['--depth', '1']; // shallow clone for speed
+        const cloneOpts = [];
         if (branch) cloneOpts.push('--branch', branch);
 
-        await simpleGit().clone(url, projectDir, cloneOpts);
+        await simpleGit().clone(buildAuthenticatedGitUrl(url, gitCredentials), projectDir, cloneOpts);
 
         // Auto-assign to creator's group
         if (req.auth && req.auth.role === 'group') {
@@ -867,7 +993,14 @@ app.post('/api/projects/git-clone', async (req, res) => {
 
         res.json({ success: true, name: finalName });
     } catch (e) {
-        res.status(500).json({ error: 'Clone failed: ' + e.message });
+        const message = sanitizeGitMessage(e.message, gitCredentials);
+        if (isGitPermissionFailure(message)) {
+            return res.status(400).json({ error: getGitPermissionHint('clone', url) });
+        }
+        if (isGitAuthFailure(message)) {
+            return res.status(400).json({ error: getGitAuthHint('clone', url, gitCredentials) });
+        }
+        res.status(500).json({ error: 'Clone failed: ' + message });
     }
 });
 
@@ -934,15 +1067,39 @@ app.get('/api/projects/:name/git/log', async (req, res) => {
     try {
         const projectDir = getProjectDir(name);
         const projectGit = simpleGit(projectDir);
-        const log = await projectGit.log({ maxCount: 50 });
-        res.json({ commits: log.all.map(c => ({
+
+        // Get structured log with parent info for graph rendering
+        const log = await projectGit.log({ maxCount: 80, '--all': null });
+        const commits = log.all.map(c => ({
             hash: c.hash.substring(0, 7),
             fullHash: c.hash,
             message: c.message,
             author: c.author_name,
             date: c.date,
             refs: c.refs
-        })) });
+        }));
+
+        // Get the actual graph output from git for visual rendering
+        let graphLines = [];
+        try {
+            const DELIM = '<<GDELIM>>';
+            const graphOutput = await projectGit.raw([
+                'log', '--graph', '--all', '-80',
+                `--format=${DELIM}%h${DELIM}`
+            ]);
+            graphLines = graphOutput.trim().split('\n').map(line => {
+                const delimIdx = line.indexOf(DELIM);
+                if (delimIdx !== -1) {
+                    const graphPart = line.substring(0, delimIdx);
+                    const hash = line.substring(delimIdx + DELIM.length, line.indexOf(DELIM, delimIdx + DELIM.length)) || '';
+                    return { graph: graphPart, hash: hash.substring(0, 7) };
+                }
+                // Lines with only graph characters (merge lines etc)
+                return { graph: line, hash: null };
+            });
+        } catch (_) {}
+
+        res.json({ commits, graphLines });
     } catch (e) {
         res.status(500).json({ error: e.message });
     }
@@ -1015,10 +1172,16 @@ app.post('/api/projects/:name/git/create-branch', async (req, res) => {
 app.post('/api/projects/:name/git/commit', async (req, res) => {
     const { name } = req.params;
     if (!isValidProjectName(name)) return res.status(400).json({ error: 'Invalid project name' });
-    const { message } = req.body;
+    const { message, author } = req.body;
     try {
         const projectDir = getProjectDir(name);
         const projectGit = simpleGit(projectDir);
+        // Ensure git identity is set for this repo
+        const authorName = author || (req.auth && req.auth.group) || 'VividTex User';
+        try {
+            await projectGit.addConfig('user.name', authorName);
+            await projectGit.addConfig('user.email', `${authorName.replace(/\s+/g, '.')}@vividtex.local`);
+        } catch (_) {}
         await projectGit.add('./*');
         await projectGit.commit(message || 'Auto-commit from VividTex');
         res.json({ success: true, message: 'Committed successfully' });
@@ -1031,15 +1194,38 @@ app.post('/api/projects/:name/git/commit', async (req, res) => {
 app.post('/api/projects/:name/git/pull', async (req, res) => {
     const { name } = req.params;
     if (!isValidProjectName(name)) return res.status(400).json({ error: 'Invalid project name' });
+    const gitCredentials = getGitCredentials(req);
+    let remoteInfo = null;
     try {
         const projectDir = getProjectDir(name);
         const projectGit = simpleGit(projectDir);
+        remoteInfo = await getGitRemoteInfo(projectGit, gitCredentials);
+        if (!remoteInfo) {
+            return res.status(400).json({ error: 'No remote configured. Add a remote first.' });
+        }
+        const branchResult = await projectGit.branch();
+        const currentBranch = branchResult.current;
         // Unshallow if needed, then pull
-        try { await projectGit.fetch(['--unshallow']); } catch (_) {}
-        const result = await projectGit.pull();
+        try {
+            if (remoteInfo.authUrl !== remoteInfo.url) {
+                await projectGit.raw(['fetch', '--unshallow', remoteInfo.authUrl]);
+            } else {
+                await projectGit.fetch(['--unshallow']);
+            }
+        } catch (_) {}
+        const result = remoteInfo.authUrl !== remoteInfo.url
+            ? await projectGit.pull(remoteInfo.authUrl, currentBranch)
+            : await projectGit.pull();
         res.json({ success: true, summary: result.summary });
     } catch (e) {
-        res.status(500).json({ error: 'Pull failed: ' + e.message });
+        const message = sanitizeGitMessage(e.message, gitCredentials);
+        if (isGitPermissionFailure(message)) {
+            return res.status(400).json({ error: getGitPermissionHint('pull', remoteInfo && remoteInfo.url) });
+        }
+        if (isGitAuthFailure(message)) {
+            return res.status(400).json({ error: getGitAuthHint('pull', remoteInfo && remoteInfo.url, gitCredentials) });
+        }
+        res.status(500).json({ error: 'Pull failed: ' + message });
     }
 });
 
@@ -1047,20 +1233,50 @@ app.post('/api/projects/:name/git/pull', async (req, res) => {
 app.post('/api/projects/:name/git/push', async (req, res) => {
     const { name } = req.params;
     if (!isValidProjectName(name)) return res.status(400).json({ error: 'Invalid project name' });
-    const { setUpstream } = req.body;
+    const setUpstream = req.body && req.body.setUpstream;
+    const gitCredentials = getGitCredentials(req);
+    let remoteInfo = null;
     try {
         const projectDir = getProjectDir(name);
         const projectGit = simpleGit(projectDir);
+        remoteInfo = await getGitRemoteInfo(projectGit, gitCredentials);
+        if (!remoteInfo) {
+            return res.status(400).json({ error: 'No remote configured. Add a remote first.' });
+        }
         const branchResult = await projectGit.branch();
         const currentBranch = branchResult.current;
-        if (setUpstream) {
-            await projectGit.push(['--set-upstream', 'origin', currentBranch]);
+        const pushTarget = remoteInfo.authUrl !== remoteInfo.url ? remoteInfo.authUrl : remoteInfo.name;
+        // Check if branch has an upstream tracking branch
+        let hasUpstream = false;
+        try {
+            const tracking = await projectGit.raw(['config', `branch.${currentBranch}.remote`]);
+            hasUpstream = !!tracking.trim();
+        } catch (_) {}
+
+        if (setUpstream || !hasUpstream) {
+            if (pushTarget === remoteInfo.name) {
+                await projectGit.push(['--set-upstream', remoteInfo.name, currentBranch]);
+            } else {
+                await projectGit.push(pushTarget, `${currentBranch}:${currentBranch}`);
+                await projectGit.addConfig(`branch.${currentBranch}.remote`, remoteInfo.name);
+                await projectGit.addConfig(`branch.${currentBranch}.merge`, `refs/heads/${currentBranch}`);
+            }
         } else {
-            await projectGit.push('origin', currentBranch);
+            await projectGit.push(pushTarget, currentBranch);
         }
         res.json({ success: true, branch: currentBranch });
     } catch (e) {
-        res.status(500).json({ error: 'Push failed: ' + e.message });
+        const msg = sanitizeGitMessage(e.message, gitCredentials);
+        if (isGitPermissionFailure(msg)) {
+            return res.status(400).json({ error: getGitPermissionHint('push', remoteInfo && remoteInfo.url) });
+        }
+        if (isGitAuthFailure(msg)) {
+            return res.status(400).json({ error: getGitAuthHint('push', remoteInfo && remoteInfo.url, gitCredentials) });
+        }
+        if (msg.includes('no upstream') || msg.includes('has no upstream branch')) {
+            return res.status(400).json({ error: 'no upstream branch' });
+        }
+        res.status(500).json({ error: 'Push failed: ' + msg });
     }
 });
 
