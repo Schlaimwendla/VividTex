@@ -8,11 +8,37 @@ import { yCollab } from 'y-codemirror.next';
 import axios from 'axios';
 import './App.css';
 
+const GIT_AUTH_USERNAME_KEY = 'vividtex-git-username';
+const GIT_AUTH_TOKEN_KEY = 'vividtex-git-token';
+
+const loadStoredGitAuth = () => ({
+  username: localStorage.getItem(GIT_AUTH_USERNAME_KEY) || '',
+  token: localStorage.getItem(GIT_AUTH_TOKEN_KEY) || '',
+});
+
+const saveStoredGitAuth = (username, token) => {
+  if (username) localStorage.setItem(GIT_AUTH_USERNAME_KEY, username);
+  else localStorage.removeItem(GIT_AUTH_USERNAME_KEY);
+
+  if (token) localStorage.setItem(GIT_AUTH_TOKEN_KEY, token);
+  else localStorage.removeItem(GIT_AUTH_TOKEN_KEY);
+};
+
+const clearStoredGitAuth = () => {
+  localStorage.removeItem(GIT_AUTH_USERNAME_KEY);
+  localStorage.removeItem(GIT_AUTH_TOKEN_KEY);
+};
+
 axios.interceptors.request.use(config => {
+  config.headers = config.headers || {};
   const key = localStorage.getItem('vividtex-key');
   if (key) {
     config.headers.Authorization = `Bearer ${key}`;
   }
+  const gitUsername = localStorage.getItem(GIT_AUTH_USERNAME_KEY);
+  const gitToken = localStorage.getItem(GIT_AUTH_TOKEN_KEY);
+  if (gitUsername) config.headers['X-VividTex-Git-Username'] = gitUsername;
+  if (gitToken) config.headers['X-VividTex-Git-Token'] = gitToken;
   return config;
 });
 
@@ -171,6 +197,67 @@ function LoginPage({ onLogin }) {
           </button>
         </form>
       </div>
+    </div>
+  );
+}
+
+function GitCredentialsPanel({ className = '' }) {
+  const [gitUsername, setGitUsername] = useState(() => loadStoredGitAuth().username);
+  const [gitToken, setGitToken] = useState(() => loadStoredGitAuth().token);
+  const [showToken, setShowToken] = useState(false);
+  const [notice, setNotice] = useState('');
+
+  const handleSave = () => {
+    const username = gitUsername.trim();
+    const token = gitToken.trim();
+    saveStoredGitAuth(username, token);
+    setGitUsername(username);
+    setGitToken(token);
+    setNotice(username || token ? 'Saved in this browser for this user.' : 'Cleared from this browser.');
+  };
+
+  const handleClear = () => {
+    setGitUsername('');
+    setGitToken('');
+    clearStoredGitAuth();
+    setNotice('Removed from this browser.');
+  };
+
+  return (
+    <div className={`git-auth-panel ${className}`.trim()}>
+      <div className="git-auth-header-row">
+        <h4>Git Credentials</h4>
+        {(gitUsername || gitToken) && <span className="git-auth-badge">Saved locally</span>}
+      </div>
+      <p className="git-auth-help">
+        Used only for private HTTPS remotes. Stored locally in this browser so each student can use their own Git account.
+      </p>
+      <div className="git-auth-fields">
+        <input
+          className="modal-input"
+          placeholder="Git username"
+          value={gitUsername}
+          onChange={(e) => setGitUsername(e.target.value)}
+        />
+        <div className="git-auth-token-row">
+          <input
+            className="modal-input"
+            type={showToken ? 'text' : 'password'}
+            placeholder="Personal access token"
+            value={gitToken}
+            onChange={(e) => setGitToken(e.target.value)}
+          />
+          <button className="btn-secondary btn-small" onClick={() => setShowToken(v => !v)}>
+            {showToken ? 'Hide' : 'Show'}
+          </button>
+        </div>
+      </div>
+      <div className="git-auth-actions">
+        <button className="btn-secondary btn-small" onClick={handleSave}>Save in Browser</button>
+        <button className="btn-secondary btn-small" onClick={handleClear} disabled={!gitUsername && !gitToken}>Clear</button>
+      </div>
+      {notice && <p className="git-auth-note">{notice}</p>}
+      <p className="git-auth-help git-auth-help-secondary">SSH remotes still need an SSH key inside the container.</p>
     </div>
   );
 }
@@ -435,6 +522,7 @@ function Homepage({ onProjectSelect, auth, onLogout }) {
                   onChange={(e) => setGitCloneName(e.target.value)}
                 />
               </div>
+              <GitCredentialsPanel className="git-auth-panel-inline" />
               <button className="btn-primary" onClick={handleGitClone} disabled={gitCloning}>
                 {gitCloning ? '⏳ Cloning...' : '📥 Clone Repository'}
               </button>
@@ -484,6 +572,7 @@ function App() {
   const handleLogout = () => {
     localStorage.removeItem('vividtex-key');
     localStorage.removeItem('vividtex-auth');
+    clearStoredGitAuth();
     setAuthKey(null);
     setAuthInfo(null);
   };
@@ -501,7 +590,7 @@ function App() {
 function AppWorkspace({ auth, onLogout }) {
   const [currentProject, setCurrentProject] = useState(null);
   const [fileTree, setFileTree] = useState([]);
-  const [activeFile, setActiveFile] = useState('main.tex');
+  const [activeFile, setActiveFile] = useState(null);
   const [connectedUsers, setConnectedUsers] = useState([]);
   const [username, setUsername] = useState('Anonymous');
   const [status, setStatus] = useState('Disconnected');
@@ -514,7 +603,7 @@ function AppWorkspace({ auth, onLogout }) {
   const [isGitRepo, setIsGitRepo] = useState(false);
   const [showProjectMenu, setShowProjectMenu] = useState(false);
   const [isDragOver, setIsDragOver] = useState(false);
-  const [mainFile, setMainFile] = useState('main.tex');
+  const [mainFile, setMainFile] = useState(null);
   const [gitBranch, setGitBranch] = useState('');
   const [hasGitRemote, setHasGitRemote] = useState(false);
   const [gitBranches, setGitBranches] = useState({ local: [], remote: [] });
@@ -522,13 +611,14 @@ function AppWorkspace({ auth, onLogout }) {
   const [gitChangedFiles, setGitChangedFiles] = useState([]);
   const [gitCommitMsg, setGitCommitMsg] = useState('');
   const [gitLog, setGitLog] = useState([]);
+  const [gitGraphLines, setGitGraphLines] = useState([]);
   const [gitPanelTab, setGitPanelTab] = useState('commit'); // 'commit', 'branches', 'log'
   const [newBranchName, setNewBranchName] = useState('');
 
   const editorContainerRef = useRef(null);
   const editorViewRef = useRef(null);
   const providerRef = useRef(null);
-  const activeFileRef = useRef('main.tex');
+  const activeFileRef = useRef(null);
   const resizableAreaRef = useRef(null);
   const seededRef = useRef(false);
   const isResizingPaneRef = useRef(false);
@@ -581,6 +671,7 @@ function AppWorkspace({ auth, onLogout }) {
     try {
       const res = await axios.get(`${API_URL}/api/projects/${encodeURIComponent(currentProject)}/git/log`);
       setGitLog(res.data.commits || []);
+      setGitGraphLines(res.data.graphLines || []);
     } catch (e) { console.error("Failed to load git log", e); }
   }, [currentProject]);
 
@@ -746,12 +837,13 @@ function AppWorkspace({ auth, onLogout }) {
     if (!currentProject) return;
     if (!gitCommitMsg.trim()) { alert('Please enter a commit message'); return; }
     try {
-      if (providerRef.current) {
+      if (providerRef.current && activeFile) {
         const currentContent = providerRef.current.document.getText('codemirror').toString();
         await axios.post(`${API_URL}/api/projects/${encodeURIComponent(currentProject)}/file?path=${encodeURIComponent(activeFile)}`, { content: currentContent });
       }
       const res = await axios.post(`${API_URL}/api/projects/${encodeURIComponent(currentProject)}/git/commit`, {
-        message: gitCommitMsg.trim()
+        message: gitCommitMsg.trim(),
+        author: username || undefined
       });
       if (res.data.success) {
         setStatus('Committed');
@@ -812,7 +904,7 @@ function AppWorkspace({ auth, onLogout }) {
       const res = await axios.post(`${API_URL}/api/projects/${encodeURIComponent(currentProject)}/git/checkout`, { branch });
       if (res.data.success) {
         setGitBranch(res.data.branch);
-        setStatus(`On ${res.data.branch}`);
+        setStatus('Switched branch');
         fetchTree();
         fetchGitStatus();
         fetchGitDiff();
@@ -834,7 +926,7 @@ function AppWorkspace({ auth, onLogout }) {
       if (res.data.success) {
         setGitBranch(res.data.branch);
         setNewBranchName('');
-        setStatus(`Created & switched to ${res.data.branch}`);
+        setStatus('Branch created');
         fetchGitStatus();
       }
     } catch (e) {
@@ -1120,7 +1212,6 @@ function AppWorkspace({ auth, onLogout }) {
           </div>
           <input ref={zipInputRef} type="file" accept=".zip" onChange={handleZipImportFromMenu} style={{ display: 'none' }} />
 
-          <span className="status-badge"><span className={`status-dot ${statusClass}`}></span>{status}</span>
           {isGitRepo && gitBranch && (
             <button className="git-branch-badge" onClick={() => openGitPanel('branches')} title="Branch management">
               🌿 {gitBranch}
@@ -1230,6 +1321,7 @@ function AppWorkspace({ auth, onLogout }) {
                   )}
                 </div>
                 <div className="git-commit-section">
+                  <GitCredentialsPanel className="git-auth-panel-inline" />
                   <textarea
                     className="git-commit-input"
                     placeholder="Commit message..."
@@ -1301,22 +1393,85 @@ function AppWorkspace({ auth, onLogout }) {
                   {gitLog.length === 0 ? (
                     <p className="git-empty">No commits yet</p>
                   ) : (
-                    gitLog.map((c, i) => (
-                      <div key={i} className="git-log-item">
-                        <div className="git-log-graph">
-                          <span className="git-log-dot" />
-                          {i < gitLog.length - 1 && <span className="git-log-line" />}
-                        </div>
-                        <div className="git-log-content">
-                          <div className="git-log-message">{c.message}</div>
-                          <div className="git-log-meta">
-                            <span className="git-log-hash">{c.hash}</span>
-                            <span className="git-log-author">{c.author}</span>
-                            <span className="git-log-date">{new Date(c.date).toLocaleDateString()}</span>
+                    (() => {
+                      const commitMap = {};
+                      gitLog.forEach(c => { commitMap[c.hash] = c; });
+                      const branchColors = ['#8b5cf6', '#22d3ee', '#f59e0b', '#10b981', '#ef4444', '#ec4899', '#6366f1', '#14b8a6'];
+                      // Colorize graph characters by column position
+                      const colorizeGraph = (graphStr) => {
+                        const spans = [];
+                        let col = 0;
+                        for (let j = 0; j < graphStr.length; j++) {
+                          const ch = graphStr[j];
+                          if (ch === '|' || ch === '*') {
+                            const color = branchColors[Math.floor(col / 2) % branchColors.length];
+                            if (ch === '*') {
+                              spans.push(<span key={j} style={{ color, fontWeight: 'bold' }}>●</span>);
+                            } else {
+                              spans.push(<span key={j} style={{ color }}>{ch}</span>);
+                            }
+                            col++;
+                          } else if (ch === '/' || ch === '\\') {
+                            const color = branchColors[Math.floor(col / 2) % branchColors.length];
+                            spans.push(<span key={j} style={{ color }}>{ch}</span>);
+                          } else if (ch === '_') {
+                            const color = branchColors[Math.floor(col / 2) % branchColors.length];
+                            spans.push(<span key={j} style={{ color }}>{ch}</span>);
+                          } else {
+                            spans.push(<span key={j}>{ch}</span>);
+                            if (ch !== ' ') col++;
+                          }
+                        }
+                        return spans;
+                      };
+                      const rendered = [];
+                      gitGraphLines.forEach((gl, i) => {
+                        const commit = gl.hash ? commitMap[gl.hash] : null;
+                        if (commit) {
+                          rendered.push(
+                            <div key={`c-${i}`} className="git-log-item">
+                              <pre className="git-log-graph-text">{colorizeGraph(gl.graph)}</pre>
+                              <div className="git-log-content">
+                                <div className="git-log-message">
+                                  {commit.refs && <span className="git-log-refs">{commit.refs}</span>}
+                                  {commit.message}
+                                </div>
+                                <div className="git-log-meta">
+                                  <span className="git-log-hash">{commit.hash}</span>
+                                  <span className="git-log-author">{commit.author}</span>
+                                  <span className="git-log-date">{new Date(commit.date).toLocaleDateString()}</span>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        } else if (gl.graph.trim()) {
+                          rendered.push(
+                            <div key={`g-${i}`} className="git-log-item git-log-graph-only">
+                              <pre className="git-log-graph-text">{colorizeGraph(gl.graph)}</pre>
+                            </div>
+                          );
+                        }
+                      });
+                      if (rendered.length === 0) {
+                        return gitLog.map((c, i) => (
+                          <div key={i} className="git-log-item">
+                            <div className="git-log-graph">
+                              <span className="git-log-dot" />
+                              {i < gitLog.length - 1 && <span className="git-log-line" />}
+                            </div>
+                            <div className="git-log-content">
+                              <div className="git-log-message">{c.message}</div>
+                              <div className="git-log-meta">
+                                <span className="git-log-hash">{c.hash}</span>
+                                <span className="git-log-author">{c.author}</span>
+                                <span className="git-log-date">{new Date(c.date).toLocaleDateString()}</span>
+                              </div>
+                            </div>
                           </div>
-                        </div>
-                      </div>
-                    ))
+                        ));
+                      }
+                      return rendered;
+                    })()
                   )}
                 </div>
               </div>
