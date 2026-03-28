@@ -1,5 +1,29 @@
 frontend/node_modules/
-dist/
-workspace/
-.env
 backend/node_modules/
+dist/
+.env
+
+# Workspace / user projects
+workspace/
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.fls
+*.fdb_latexmk
+*.synctex.gz
+*.synctex(busy)
+*.bbl
+*.bcf
+*.blg
+*.out
+*.toc
+*.lof
+*.lot
+*.run.xml
+*.nav
+*.snm
+*.vrb
+*.idx
+*.ilg
+*.ind

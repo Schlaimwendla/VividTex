@@ -5,7 +5,8 @@ RUN apk add --no-cache \
     texlive-full \
     git \
     bash \
-    perl
+    perl \
+    unzip
 
 WORKDIR /app
 
@@ -24,12 +25,12 @@ RUN npm install
 # Expose ports for the backend API and Hocuspocus WebSockets
 EXPOSE 3001 1234
 
-# Create a default workspace directory
-RUN mkdir -p /app/workspace
+# Create a default workspace directory with proper permissions
+RUN mkdir -p /app/workspace && chmod 777 /app/workspace
 
 # Set default environment variables
 ENV VIVIDTEX_WORKDIR=/app/workspace
 ENV VIVIDTEX_PASSWORD=
 
 # Start the backend server
-CMD ["node", "server.js"]
+CMD ["sh", "-c", "cd /app/backend && npm start"]
