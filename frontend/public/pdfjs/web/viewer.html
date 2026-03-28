@@ -84,13 +84,13 @@ See https://github.com/adobe-type-tools/cmap-resources
             var height = (e.data.H || 12) * viewport.scale;
             
             // Smarter width: If SyncTeX gives a huge width (like the whole line), 
-            // we use a more reasonable highlight width for better visibility.
-            var rawWidth = e.data.W || 300;
+            // use a smaller highlight to indicate the approximate position.
+            var rawWidth = e.data.W || 200;
             var width = rawWidth * viewport.scale;
             
-            // If the width is more than 60% of the page, it's likely a full-line box.
-            // In that case, we cap it to a nicer "highlight" size.
-            var maxWidth = viewport.width * 0.7;
+            // Cap width: a typical word/phrase is about 100-200pt.
+            // If the width is more than ~250pt scaled, it's likely a full-line box.
+            var maxWidth = 200 * viewport.scale;
             if (width > maxWidth) {
               width = maxWidth;
             }
