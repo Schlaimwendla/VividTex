@@ -6,14 +6,26 @@ backend/dist/
 
 # Logs
 *.log
+backend/logs/
 backend/nohup.out
 
 # Environment
 .env
 .env.local
 
+# Config (contains local paths)
+backend/config.json
+
 # Workspace / user projects
 workspace/
+
+# Temp / backup files
+*.bak
+*.tmp
+/tmp/
+
+# Uploads
+backend/uploads/
 
 # LaTeX build artifacts
 *.aux

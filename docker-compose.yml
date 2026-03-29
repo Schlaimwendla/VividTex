@@ -11,4 +11,5 @@ services:
       - VIVIDTEX_WORKDIR=/app/workspace
     volumes:
       - /home/laim/workspace:/app/workspace
+      - ./.env:/app/.env
     working_dir: /app

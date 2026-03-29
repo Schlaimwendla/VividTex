@@ -172,9 +172,28 @@ const myColor = userColors[Math.floor(Math.random() * userColors.length)];
 
 // ─── File Tree Component (collapsible, delete, drag-drop between folders) ───
 
-function FileTreeNode({ node, activeFile, onSelect, onDelete, onMove, project, depth = 0 }) {
+function FileTreeNode({ node, activeFile, onSelect, onDelete, onMove, onRename, project, depth = 0 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [isDragTarget, setIsDragTarget] = useState(false);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renameName, setRenameName] = useState(node.name);
+  const renameInputRef = useRef(null);
+
+  useEffect(() => {
+    if (isRenaming && renameInputRef.current) {
+      renameInputRef.current.focus();
+      const dotIdx = node.name.lastIndexOf('.');
+      renameInputRef.current.setSelectionRange(0, dotIdx > 0 ? dotIdx : node.name.length);
+    }
+  }, [isRenaming]);
+
+  const submitRename = () => {
+    const trimmed = renameName.trim();
+    if (trimmed && trimmed !== node.name) {
+      onRename(node.path, trimmed);
+    }
+    setIsRenaming(false);
+  };
 
   const handleDragStart = (e) => {
     e.stopPropagation();
@@ -217,13 +236,25 @@ function FileTreeNode({ node, activeFile, onSelect, onDelete, onMove, project, d
           style={{ paddingLeft: `${8 + depth * 12}px` }}
         >
           <span className="folder-toggle">{collapsed ? '▸' : '▾'}</span>
-          <span>📂 {node.name}</span>
+          {isRenaming ? (
+            <input
+              ref={renameInputRef}
+              className="rename-input"
+              value={renameName}
+              onChange={(e) => setRenameName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitRename(); if (e.key === 'Escape') setIsRenaming(false); }}
+              onBlur={submitRename}
+              onClick={(e) => e.stopPropagation()}
+            />
+          ) : (
+            <span onDoubleClick={(e) => { e.stopPropagation(); setRenameName(node.name); setIsRenaming(true); }}>📂 {node.name}</span>
+          )}
           <button className="tree-delete-btn" title={`Delete folder ${node.name}`} onClick={(e) => { e.stopPropagation(); onDelete(node.path, true); }}>✕</button>
         </div>
         {!collapsed && (
           <div className="folder-children">
             {node.children.map(child => (
-              <FileTreeNode key={child.path} node={child} activeFile={activeFile} onSelect={onSelect} onDelete={onDelete} onMove={onMove} project={project} depth={depth + 1} />
+              <FileTreeNode key={child.path} node={child} activeFile={activeFile} onSelect={onSelect} onDelete={onDelete} onMove={onMove} onRename={onRename} project={project} depth={depth + 1} />
             ))}
           </div>
         )}
@@ -236,10 +267,22 @@ function FileTreeNode({ node, activeFile, onSelect, onDelete, onMove, project, d
       className={`file-item ${activeFile === node.path ? 'active' : ''}`}
       draggable
       onDragStart={handleDragStart}
-      onClick={() => onSelect(node.path)}
+      onClick={() => !isRenaming && onSelect(node.path)}
       style={{ paddingLeft: `${8 + depth * 12}px` }}
     >
-      <span>📄 {node.name}</span>
+      {isRenaming ? (
+        <input
+          ref={renameInputRef}
+          className="rename-input"
+          value={renameName}
+          onChange={(e) => setRenameName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') submitRename(); if (e.key === 'Escape') setIsRenaming(false); }}
+          onBlur={submitRename}
+          onClick={(e) => e.stopPropagation()}
+        />
+      ) : (
+        <span onDoubleClick={(e) => { e.stopPropagation(); setRenameName(node.name); setIsRenaming(true); }}>📄 {node.name}</span>
+      )}
       <button className="tree-delete-btn" title={`Delete ${node.name}`} onClick={(e) => { e.stopPropagation(); onDelete(node.path, false); }}>✕</button>
     </div>
   );
@@ -704,6 +747,11 @@ function AppWorkspace({ auth, onLogout }) {
   const [gitPanelTab, setGitPanelTab] = useState('commit'); // 'commit', 'branches', 'log'
   const [newBranchName, setNewBranchName] = useState('');
   const [showShortcuts, setShowShortcuts] = useState(false);
+  const [compileLog, setCompileLog] = useState(null);
+  const [showCompileLog, setShowCompileLog] = useState(false);
+  const [wordCount, setWordCount] = useState(0);
+  const [theme, setTheme] = useState(() => localStorage.getItem('vividtex-theme') || 'dark');
+  const [autoCompile, setAutoCompile] = useState(() => localStorage.getItem('vividtex-autocompile') === 'true');
   const editorContainerRef = useRef(null);
   const editorViewRef = useRef(null);
   const providerRef = useRef(null);
@@ -714,6 +762,8 @@ function AppWorkspace({ auth, onLogout }) {
   const projectMenuRef = useRef(null);
   const zipInputRef = useRef(null);
   const handleCompileRef = useRef(null);
+  const autoCompileTimerRef = useRef(null);
+  const autoCompileRef = useRef(false);
 
   const handlePaneResizerMouseDown = (e) => {
     isResizingPaneRef.current = true;
@@ -721,6 +771,18 @@ function AppWorkspace({ auth, onLogout }) {
     document.body.classList.add('resizing-pane');
     e.preventDefault();
   };
+
+  // Theme effect
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('vividtex-theme', theme);
+  }, [theme]);
+
+  // Auto-compile ref sync
+  useEffect(() => {
+    autoCompileRef.current = autoCompile;
+    localStorage.setItem('vividtex-autocompile', autoCompile);
+  }, [autoCompile]);
 
   const fetchTree = useCallback(async () => {
     if (!currentProject) return;
@@ -794,6 +856,17 @@ function AppWorkspace({ auth, onLogout }) {
       fetchTree();
     } catch (e) {
       alert('Move failed: ' + (e.response?.data?.error || e.message));
+    }
+  };
+
+  const handleRenameFile = async (filePath, newName) => {
+    if (!currentProject || !newName) return;
+    try {
+      const res = await axios.post(`${API_URL}/api/projects/${encodeURIComponent(currentProject)}/rename`, { filePath, newName });
+      fetchTree();
+      if (activeFile === filePath) setActiveFile(res.data.newPath);
+    } catch (e) {
+      alert('Rename failed: ' + (e.response?.data?.error || e.message));
     }
   };
 
@@ -901,11 +974,18 @@ function AppWorkspace({ auth, onLogout }) {
         await axios.post(`${API_URL}/api/projects/${encodeURIComponent(currentProject)}/file?path=${encodeURIComponent(activeFile)}`, { content: currentContent });
       }
       const res = await axios.post(`${API_URL}/api/projects/${encodeURIComponent(currentProject)}/compile`);
+      setCompileLog({ stdout: res.data.stdout || '', stderr: res.data.stderr || '', success: res.data.success });
       if (res.data.success) {
         const pwd = localStorage.getItem('vividtex-key') || '';
         setPdfUrl(`http://${window.location.host}/pdfjs/web/viewer.html?file=${encodeURIComponent(API_URL + '/api/projects/' + encodeURIComponent(currentProject) + '/pdf?t=' + Date.now() + '&token=' + pwd)}#view=FitH&pagemode=none`);
       }
-    } catch (e) { console.error("Compilation failed", e); }
+    } catch (e) {
+      const data = e.response?.data;
+      if (data) {
+        setCompileLog({ stdout: data.stdout || '', stderr: data.stderr || '', success: false, message: data.message });
+        setShowCompileLog(true);
+      }
+    }
     finally { setIsCompiling(false); }
   };
   handleCompileRef.current = handleCompile;
@@ -1311,6 +1391,20 @@ function AppWorkspace({ auth, onLogout }) {
             ...foldKeymap,
             ...lintKeymap,
           ]),
+          // Word count & auto-compile listeners
+          EditorView.updateListener.of(update => {
+            if (update.docChanged) {
+              const text = update.state.doc.toString();
+              const cleaned = text.replace(/\\[a-zA-Z]+/g, '').replace(/[{}\\%$&_^~#\[\]]/g, ' ');
+              setWordCount(cleaned.trim().split(/\s+/).filter(w => w.length > 0).length);
+              if (autoCompileRef.current) {
+                if (autoCompileTimerRef.current) clearTimeout(autoCompileTimerRef.current);
+                autoCompileTimerRef.current = setTimeout(() => { handleCompileRef.current?.(); }, 5000);
+              }
+            }
+          }),
+          // Spellcheck
+          EditorView.contentAttributes.of({ spellcheck: "true" }),
           yCollab(ytext, hpProvider.awareness, { undoManager: new Y.UndoManager(ytext) })
         ],
       });
@@ -1319,6 +1413,10 @@ function AppWorkspace({ auth, onLogout }) {
         editorContainerRef.current.innerHTML = '';
         view = new EditorView({ state, parent: editorContainerRef.current });
         editorViewRef.current = view;
+        // Set initial word count
+        const initText = state.doc.toString();
+        const initCleaned = initText.replace(/\\[a-zA-Z]+/g, '').replace(/[{}\\%$&_^~#\[\]]/g, ' ');
+        setWordCount(initCleaned.trim().split(/\s+/).filter(w => w.length > 0).length);
       }
     };
     initEditor();
@@ -1346,7 +1444,7 @@ function AppWorkspace({ auth, onLogout }) {
             {isSidebarVisible ? "❮" : "❯"}
           </button>
 
-          <span className="header-title" onClick={() => setCurrentProject(null)} style={{ cursor: 'pointer' }} title="Back to projects">vividTex</span>
+          <img src="/logo.png" alt="vividTex" className="header-logo" onClick={() => setCurrentProject(null)} title="Back to projects" />
 
           <div className="project-menu-wrapper" ref={projectMenuRef}>
             <button className="btn-secondary project-name-btn" onClick={() => setShowProjectMenu(!showProjectMenu)}>
@@ -1377,6 +1475,8 @@ function AppWorkspace({ auth, onLogout }) {
           </div>
         </div>
         <div className="header-actions">
+          <button className="btn-secondary btn-small" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}>{theme === 'dark' ? '☀️' : '🌙'}</button>
+          <button className={`btn-secondary btn-small ${autoCompile ? 'active-toggle' : ''}`} onClick={() => setAutoCompile(a => !a)} title={autoCompile ? 'Disable auto-compile' : 'Enable auto-compile (5s delay)'}>{autoCompile ? '⏸️' : '⏵'} Auto</button>
           <button className="btn-secondary btn-small" onClick={() => setShowShortcuts(true)} title="Keyboard shortcuts">⌨️</button>
           <button className="btn-secondary" onClick={handleExportZip} title="Download project as ZIP">📦 Export</button>
           <button className="btn-secondary" onClick={handleDownloadPdf} disabled={!pdfUrl}>⬇️ PDF</button>
@@ -1411,14 +1511,20 @@ function AppWorkspace({ auth, onLogout }) {
           <div className="file-tree">
             {isDragOver && <div className="drop-indicator">Drop files here to upload</div>}
             {fileTree.map(node => (
-              <FileTreeNode key={node.path} node={node} activeFile={activeFile} onSelect={setActiveFile} onDelete={handleDeleteFile} onMove={handleMoveFile} project={currentProject} />
+              <FileTreeNode key={node.path} node={node} activeFile={activeFile} onSelect={setActiveFile} onDelete={handleDeleteFile} onMove={handleMoveFile} onRename={handleRenameFile} project={currentProject} />
             ))}
           </div>
         </aside>
 
         <div className="workspace-resizable-area" ref={resizableAreaRef}>
           <section className="editor-pane panel" style={{ flex: `0 0 ${editorWidth}%` }}>
-            <div className="editor-header">{activeFile}</div>
+            <div className="editor-header">
+              <span className="editor-header-filename">{activeFile}</span>
+              <div className="editor-header-right">
+                {activeFile && /\.(tex|sty|cls|bib|dtx|ins|ltx)$/i.test(activeFile) && <span className="word-count-badge">{wordCount.toLocaleString()} words</span>}
+                {compileLog && <button className={`btn-secondary btn-tiny ${showCompileLog ? 'active-toggle' : ''} ${compileLog.success ? '' : 'log-error'}`} onClick={() => setShowCompileLog(v => !v)} title="Toggle compilation log">📋 Log</button>}
+              </div>
+            </div>
             <div className="cm-editor" ref={editorContainerRef} style={{ display: /\.(png|jpe?g|gif|svg|webp|pdf)$/i.test(activeFile) ? 'none' : 'flex' }}></div>
             {/\.(png|jpe?g|gif|svg|webp)$/i.test(activeFile) && (
               <div className="image-viewer-container">
@@ -1429,6 +1535,16 @@ function AppWorkspace({ auth, onLogout }) {
                <div className="pdf-viewer-container">
                   <iframe className="pdf-frame" src={`http://${window.location.host}/pdfjs/web/viewer.html?file=${encodeURIComponent(API_URL + '/api/projects/' + encodeURIComponent(currentProject) + '/static/' + activeFile + '?token=' + (localStorage.getItem('vividtex-key') || ''))}#view=FitH&pagemode=none`} />
                </div>
+            )}
+            {/* Compile Log Panel */}
+            {showCompileLog && compileLog && (
+              <div className="compile-log-panel">
+                <div className="compile-log-header">
+                  <span>{compileLog.success ? '✅ Compilation Succeeded' : '❌ Compilation Failed'}{compileLog.message ? ` — ${compileLog.message}` : ''}</span>
+                  <button className="compile-log-close" onClick={() => setShowCompileLog(false)}>✕</button>
+                </div>
+                <pre className="compile-log-content">{compileLog.stderr || compileLog.stdout || 'No output'}</pre>
+              </div>
             )}
           </section>
 

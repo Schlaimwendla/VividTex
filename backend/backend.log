@@ -1,8 +1,0 @@
-nohup: ignoring input
-
-  Hocuspocus v3.4.4 (latex-collab) running at:
-
-  > HTTP: http://0.0.0.0:1234
-  > WebSocket: ws://0.0.0.0:1234
-Backend API running on http://0.0.0.0:3001
-Hocuspocus WebSocket running on ws://0.0.0.0:1234

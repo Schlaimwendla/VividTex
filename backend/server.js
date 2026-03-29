@@ -10,6 +10,51 @@ require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
 const { Server } = require('@hocuspocus/server');
 const multer = require('multer');
 const archiver = require('archiver');
+const winston = require('winston');
+require('winston-daily-rotate-file');
+
+// ─── LOGGING ─────────────────────────────────────────────
+
+const logDir = path.resolve(__dirname, 'logs');
+if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+
+const logFormat = winston.format.combine(
+    winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss' }),
+    winston.format.errors({ stack: true }),
+    winston.format.printf(({ timestamp, level, message, stack }) =>
+        `${timestamp} [${level.toUpperCase()}] ${stack || message}`
+    )
+);
+
+const logger = winston.createLogger({
+    level: 'info',
+    format: logFormat,
+    transports: [
+        new winston.transports.Console({
+            format: winston.format.combine(
+                winston.format.colorize(),
+                logFormat
+            )
+        }),
+        new winston.transports.DailyRotateFile({
+            dirname: logDir,
+            filename: 'vividtex-%DATE%.log',
+            datePattern: 'YYYY-MM-DD',
+            maxSize: '20m',
+            maxFiles: '30d',
+            zippedArchive: true,
+        }),
+        new winston.transports.DailyRotateFile({
+            dirname: logDir,
+            filename: 'error-%DATE%.log',
+            datePattern: 'YYYY-MM-DD',
+            maxSize: '20m',
+            maxFiles: '60d',
+            zippedArchive: true,
+            level: 'error',
+        }),
+    ],
+});
 
 // ─── SECURITY HELPERS ────────────────────────────────────
 
@@ -25,13 +70,9 @@ const isValidProjectName = (name) => /^[a-zA-Z0-9_-]+$/.test(name) && name.lengt
 // Timing-safe string comparison (prevents timing attacks on key guessing)
 const safeCompare = (a, b) => {
     if (typeof a !== 'string' || typeof b !== 'string') return false;
-    const bufA = Buffer.from(a);
-    const bufB = Buffer.from(b);
-    if (bufA.length !== bufB.length) {
-        crypto.timingSafeEqual(bufA, bufA); // constant-time even on length mismatch
-        return false;
-    }
-    return crypto.timingSafeEqual(bufA, bufB);
+    const hashA = crypto.createHash('sha256').update(a).digest();
+    const hashB = crypto.createHash('sha256').update(b).digest();
+    return crypto.timingSafeEqual(hashA, hashB);
 };
 
 const generateKey = () => crypto.randomBytes(16).toString('hex');
@@ -68,9 +109,9 @@ app.use(express.json({ limit: '5mb' }));
 app.use((req, res, next) => {
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
-    res.setHeader('X-XSS-Protection', '1; mode=block');
     res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' ws: wss:; frame-src 'self' blob:");
     next();
 });
 
@@ -89,10 +130,10 @@ const getProjectDir = (projectName) => {
 // ─── GROUP-BASED ACCESS CONTROL ──────────────────────────
 
 const GROUPS_FILE = path.join(WORKDIR, '.vividtex-groups.json');
-const ADMIN_KEY = process.env.VIVIDTEX_ADMIN_KEY || process.env.VIVIDTEX_PASSWORD;
+let ADMIN_KEY = process.env.VIVIDTEX_ADMIN_KEY || process.env.VIVIDTEX_PASSWORD;
 
 if (!ADMIN_KEY) {
-    console.warn('WARNING: No VIVIDTEX_ADMIN_KEY or VIVIDTEX_PASSWORD set. The system is open!');
+    logger.warn('No VIVIDTEX_ADMIN_KEY set — the system is open! Set one in .env or restart to auto-generate.');
 }
 
 const loadGroups = () => {
@@ -100,7 +141,7 @@ const loadGroups = () => {
         if (fs.existsSync(GROUPS_FILE)) {
             return JSON.parse(fs.readFileSync(GROUPS_FILE, 'utf-8'));
         }
-    } catch (e) { console.error('Failed to load groups.json:', e); }
+    } catch (e) { logger.error('Failed to load groups.json:', e); }
     return { groups: {} };
 };
 
@@ -448,6 +489,22 @@ app.post('/api/projects/import', rateLimit(10, 3600000), zipUpload.single('file'
                 return res.status(500).json({ error: 'Failed to extract zip' });
             }
 
+            // Zip Slip protection: verify all extracted files are within finalDir
+            const realFinalDir = fs.realpathSync(finalDir);
+            const checkPaths = (dir) => {
+                for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                    const fullPath = fs.realpathSync(path.join(dir, entry.name));
+                    if (!fullPath.startsWith(realFinalDir)) {
+                        throw new Error('Zip contains path traversal');
+                    }
+                    if (entry.isDirectory()) checkPaths(fullPath);
+                }
+            };
+            try { checkPaths(finalDir); } catch (_) {
+                try { fs.rmSync(finalDir, { recursive: true, force: true }); } catch (_2) {}
+                return res.status(400).json({ error: 'Invalid zip: contains unsafe paths' });
+            }
+
             // If the zip contains a single top-level folder, move contents up
             const entries = fs.readdirSync(finalDir);
             if (entries.length === 1) {
@@ -517,7 +574,7 @@ const getFiles = (dir, baseDir = '') => {
             }
         }
     } catch (err) {
-        console.error('Error reading dir:', err);
+        logger.error('Error reading dir:', err);
     }
     return result;
 };
@@ -561,7 +618,7 @@ const detectMainTexFile = (projectDir) => {
         // Fallback: main.tex at root if exists, else first .tex
         if (allTexFiles.includes('main.tex')) return 'main.tex';
         if (allTexFiles.length > 0) return sorted[0];
-    } catch (e) { console.error('detectMainTexFile error:', e); }
+    } catch (e) { logger.error('detectMainTexFile error:', e); }
     return 'main.tex';
 };
 
@@ -721,6 +778,26 @@ app.post('/api/projects/:name/move', (req, res) => {
     }
 });
 
+// Rename file or folder
+app.post('/api/projects/:name/rename', (req, res) => {
+    const { name } = req.params;
+    if (!isValidProjectName(name)) return res.status(400).json({ error: 'Invalid project name' });
+    const { filePath: fp, newName } = req.body;
+    if (!fp || !newName) return res.status(400).json({ error: 'Missing filePath or newName' });
+    if (/[/\\]/.test(newName) || newName === '.' || newName === '..') return res.status(400).json({ error: 'Invalid name' });
+    try {
+        const projectDir = getProjectDir(name);
+        const srcPath = safeJoin(projectDir, fp);
+        const destPath = path.join(path.dirname(srcPath), newName);
+        if (!fs.existsSync(srcPath)) return res.status(404).json({ error: 'File not found' });
+        if (fs.existsSync(destPath)) return res.status(409).json({ error: 'A file with that name already exists' });
+        fs.renameSync(srcPath, destPath);
+        res.json({ success: true, newPath: path.relative(projectDir, destPath) });
+    } catch (e) {
+        res.status(403).json({ error: 'Rename failed' });
+    }
+});
+
 // Compile project
 app.post('/api/projects/:name/compile', rateLimit(30, 3600000), (req, res) => {
     const { name } = req.params;
@@ -733,10 +810,10 @@ app.post('/api/projects/:name/compile', rateLimit(30, 3600000), (req, res) => {
         const mainTexBasename = path.basename(mainTexFile);
         const compileDir = getMainTexDir(projectDir, mainTexFile);
         const pdfName = getPdfName(mainTexFile);
-        execFile('latexmk', ['-pdf', '-synctex=1', '-interaction=nonstopmode', '-f', '-pdflatex=pdflatex --no-shell-escape %O %S', mainTexBasename], { cwd: compileDir, timeout: 120000 }, (error, stdout, stderr) => {
+        execFile('latexmk', ['-norc', '-pdf', '-synctex=1', '-interaction=nonstopmode', '-f', '-pdflatex=pdflatex --no-shell-escape %O %S', mainTexBasename], { cwd: compileDir, timeout: 120000 }, (error, stdout, stderr) => {
             const pdfPath = path.join(compileDir, pdfName);
             if (error && !fs.existsSync(pdfPath)) {
-                console.error('Compilation Error:', error);
+                logger.error('Compilation error:', error);
                 // Return log output so users can debug their LaTeX, but strip absolute paths
                 const safeStdout = (stdout || '').replaceAll(compileDir, '.').replaceAll(projectDir, '.');
                 const safeStderr = (stderr || '').replaceAll(compileDir, '.').replaceAll(projectDir, '.');
@@ -747,13 +824,14 @@ app.post('/api/projects/:name/compile', rateLimit(30, 3600000), (req, res) => {
                     stderr: safeStderr 
                 });
             }
-            if (error) console.warn('Compilation completed with warnings:', error.message);
+            if (error) logger.warn('Compilation completed with warnings: %s', error.message);
             const safeStdout = (stdout || '').replaceAll(compileDir, '.').replaceAll(projectDir, '.');
             const safeStderr = (stderr || '').replaceAll(compileDir, '.').replaceAll(projectDir, '.');
             res.json({ success: true, stdout: safeStdout, stderr: safeStderr, mainFile: mainTexFile, pdfName });
         });
     } catch (e) {
-        res.status(500).json({ error: e.message });
+        logger.error('Compilation error:', e);
+        res.status(500).json({ error: 'Compilation failed' });
     }
 });
 
@@ -782,6 +860,7 @@ app.post('/api/projects/:name/synctex/view', (req, res) => {
     if (!isValidProjectName(name)) return res.status(400).send('Invalid project name');
     const { line, column, file } = req.body;
     if (!line || !file) return res.status(400).send('Missing line or file');
+    if (!Number.isFinite(Number(line)) || (column !== undefined && !Number.isFinite(Number(column)))) return res.status(400).send('Invalid numeric parameters');
     try {
         const projectDir = getProjectDir(name);
         // Validate file path stays within project
@@ -794,7 +873,7 @@ app.post('/api/projects/:name/synctex/view', (req, res) => {
         const relFile = mainDir === '.' ? safeFile : path.relative(mainDir, safeFile);
         const col = column || 0;
         execFile('synctex', ['view', '-i', `${line}:${col}:${relFile}`, '-o', pdfName], { cwd: compileDir, timeout: 15000 }, (error, stdout) => {
-            if (error) return res.status(500).json({ error: error.message });
+            if (error) return res.status(500).json({ error: 'SyncTeX lookup failed' });
             const pageMatch = stdout.match(/Page:(\d+)/);
             const xMatch = stdout.match(/x:([\d.]+)/);
             const yMatch = stdout.match(/y:([\d.]+)/);
@@ -823,13 +902,14 @@ app.post('/api/projects/:name/synctex/edit', (req, res) => {
     if (!isValidProjectName(name)) return res.status(400).send('Invalid project name');
     const { page, x, y } = req.body;
     if (!page || x === undefined || y === undefined) return res.status(400).send('Missing page, x, or y');
+    if (!Number.isFinite(Number(page)) || !Number.isFinite(Number(x)) || !Number.isFinite(Number(y))) return res.status(400).send('Invalid numeric parameters');
     try {
         const projectDir = getProjectDir(name);
         const mainTexFile = detectMainTexFile(projectDir);
         const compileDir = getMainTexDir(projectDir, mainTexFile);
         const pdfName = getPdfName(mainTexFile);
         execFile('synctex', ['edit', '-o', `${page}:${x}:${y}:${pdfName}`], { cwd: compileDir, timeout: 15000 }, (error, stdout) => {
-            if (error) return res.status(500).json({ error: error.message });
+            if (error) return res.status(500).json({ error: 'SyncTeX lookup failed' });
             const fileMatch = stdout.match(/Input:([^\n]+)/);
             const lineMatch = stdout.match(/Line:(\d+)/);
             const columnMatch = stdout.match(/Column:(-?\d+)/);
@@ -1286,7 +1366,7 @@ app.use((req, res) => res.sendFile(path.join(__dirname, "../frontend/dist/index.
 
 const PORT = 3001;
 app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Backend API running on http://0.0.0.0:${PORT}`);
-    console.log(`Hocuspocus WebSocket running on ws://0.0.0.0:1234`);
-    console.log(`Workspace directory: ${WORKDIR}`);
+    logger.info(`Backend API running on http://0.0.0.0:${PORT}`);
+    logger.info(`Hocuspocus WebSocket running on ws://0.0.0.0:1234`);
+    logger.info(`Workspace directory: ${WORKDIR}`);
 });
