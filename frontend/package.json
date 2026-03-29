@@ -19,7 +19,6 @@
     "@codemirror/view": "^6.40.0",
     "@hocuspocus/provider": "^3.4.4",
     "axios": "^1.13.6",
-    "canvas": "^3.2.2",
     "codemirror": "^6.0.2",
     "codemirror-lang-latex": "^0.2.0",
     "path2d-polyfill": "^3.2.1",
