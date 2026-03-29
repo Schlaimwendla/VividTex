@@ -5,6 +5,11 @@ A modern, real-time collaborative LaTeX editor. Write, compile, and sync your ac
 
 ## Features
 - **Real-Time Collaboration**: Work on `.tex` files together, just like Google Docs.
+- **LaTeX Syntax Highlighting**: Full dark-theme syntax highlighting for `.tex`, `.sty`, `.cls`, and `.bib` files.
+- **Smart Autocompletion**: Inline completions for LaTeX commands, environments, math symbols, and packages — triggered as you type.
+- **Error Linting & Hover Tooltips**: Real-time LaTeX error markers in the gutter with hover-to-see diagnostics, plus hover tooltips for commands and environments.
+- **Overleaf-Style Keyboard Shortcuts**: Bold (`Ctrl+B`), italic (`Ctrl+I`), toggle comment (`Ctrl+/`), delete line (`Ctrl+D`), move/copy lines (`Alt+↑↓`), find & replace (`Ctrl+F/H`), and more.
+- **Keyboard Shortcuts Help**: Click ⌨️ in the header to see all available shortcuts at a glance.
 - **Bi-directional SyncTeX**: Click in the PDF to jump to the code, or jump from the code to the PDF.
 - **Built-in Compiler**: Live PDF generation with `latexmk` (no shell escape).
 - **Git Integration**: Clone repos, create branches, commit, pull & push — all from the browser.
@@ -14,6 +19,10 @@ A modern, real-time collaborative LaTeX editor. Write, compile, and sync your ac
 - **Group-Based Access Control**: Per-group access keys with project-level permissions.
 - **Zip Import/Export**: Upload or download projects as ZIP archives.
 - **Drag & Drop**: Upload files and folders, move items between directories.
+- **Code Folding**: Collapse and expand sections, environments, and blocks.
+- **Bracket Matching**: Matching brackets and braces are highlighted as you navigate.
+- **Auto-Close Tags**: `\begin{env}` automatically inserts the matching `\end{env}`.
+- **Search & Replace**: Full find/replace panel with regex support (`Ctrl+F` / `Ctrl+H`).
 - **Secure Self-Hosting**: Rate limiting, LaTeX sandboxing, directory-traversal protection, security headers.
 
 ## Quick Start (Manual)
