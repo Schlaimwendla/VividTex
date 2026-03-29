@@ -3,12 +3,12 @@ services:
     build: .
     container_name: vividtex
     ports:
-      - "3001:3001" # Backend API
-      - "1234:1234" # WebSocket
+      - "3001:3001" # API + WebSocket
     env_file:
       - .env
     environment:
       - VIVIDTEX_WORKDIR=/app/workspace
     volumes:
       - /home/laim/workspace:/app/workspace
+      - ./.env:/app/.env
     working_dir: /app

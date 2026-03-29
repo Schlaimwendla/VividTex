@@ -2,8 +2,14 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import * as Y from 'yjs';
 import { HocuspocusProvider } from '@hocuspocus/provider';
 import { EditorState, StateField, StateEffect } from '@codemirror/state';
-import { EditorView, lineNumbers, keymap, drawSelection, dropCursor, Decoration } from '@codemirror/view';
-import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
+import { EditorView, lineNumbers, keymap, drawSelection, dropCursor, Decoration, highlightSpecialChars, rectangularSelection, crosshairCursor, highlightActiveLine, highlightActiveLineGutter } from '@codemirror/view';
+import { history, historyKeymap, defaultKeymap, indentWithTab, undo, redo, toggleComment, indentMore, indentLess, selectAll, cursorLineBoundaryBackward, selectLineBoundaryForward, deleteLine, cursorMatchingBracket, cursorGroupLeft, cursorGroupRight, selectGroupLeft, selectGroupRight, deleteGroupBackward, deleteGroupForward, moveLineUp, moveLineDown, copyLineUp, copyLineDown } from '@codemirror/commands';
+import { autocompletion, completionKeymap, acceptCompletion } from '@codemirror/autocomplete';
+import { linter, lintGutter, lintKeymap } from '@codemirror/lint';
+import { searchKeymap, highlightSelectionMatches, openSearchPanel, closeSearchPanel } from '@codemirror/search';
+import { syntaxHighlighting, indentOnInput, bracketMatching, foldGutter, foldKeymap, defaultHighlightStyle, HighlightStyle } from '@codemirror/language';
+import { tags } from '@lezer/highlight';
+import { latex as latexLang, latexLinter } from 'codemirror-lang-latex';
 import { yCollab } from 'y-codemirror.next';
 import axios from 'axios';
 import './App.css';
@@ -55,6 +61,39 @@ axios.interceptors.response.use(
   }
 );
 
+// ─── Toast Notification System ───────────────────────────
+
+let toastIdCounter = 0;
+let globalSetToasts = null;
+
+function toast(message, type = 'info', duration = 4000) {
+  if (!globalSetToasts) return;
+  const id = ++toastIdCounter;
+  globalSetToasts(prev => [...prev.slice(-4), { id, message, type }]);
+  if (duration > 0) setTimeout(() => dismissToast(id), duration);
+}
+
+function dismissToast(id) {
+  if (!globalSetToasts) return;
+  globalSetToasts(prev => prev.filter(t => t.id !== id));
+}
+
+function ToastContainer() {
+  const [toasts, setToasts] = useState([]);
+  useEffect(() => { globalSetToasts = setToasts; return () => { globalSetToasts = null; }; }, []);
+  if (toasts.length === 0) return null;
+  return (
+    <div className="toast-container">
+      {toasts.map(t => (
+        <div key={t.id} className={`toast toast-${t.type}`} onClick={() => dismissToast(t.id)}>
+          <span className="toast-icon">{t.type === 'success' ? '✅' : t.type === 'error' ? '❌' : t.type === 'warning' ? '⚠️' : 'ℹ️'}</span>
+          <span className="toast-message">{t.message}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 const addHighlight = StateEffect.define();
 const removeHighlight = StateEffect.define();
 
@@ -74,18 +113,120 @@ const highlightField = StateField.define({
   provide: f => EditorView.decorations.from(f)
 });
 
+// ─── Dark theme syntax highlighting for LaTeX ───
+const darkLatexHighlight = HighlightStyle.define([
+  { tag: tags.keyword, color: '#c678dd' },
+  { tag: tags.name, color: '#e06c75' },
+  { tag: tags.typeName, color: '#e5c07b' },
+  { tag: tags.string, color: '#98c379' },
+  { tag: tags.number, color: '#d19a66' },
+  { tag: tags.bool, color: '#d19a66' },
+  { tag: tags.comment, color: '#5c6370', fontStyle: 'italic' },
+  { tag: tags.lineComment, color: '#5c6370', fontStyle: 'italic' },
+  { tag: tags.blockComment, color: '#5c6370', fontStyle: 'italic' },
+  { tag: tags.bracket, color: '#abb2bf' },
+  { tag: tags.paren, color: '#abb2bf' },
+  { tag: tags.squareBracket, color: '#abb2bf' },
+  { tag: tags.brace, color: '#e5c07b' },
+  { tag: tags.meta, color: '#61afef' },
+  { tag: tags.operator, color: '#56b6c2' },
+  { tag: tags.heading, color: '#e06c75', fontWeight: 'bold' },
+  { tag: tags.heading1, color: '#e06c75', fontWeight: 'bold', fontSize: '1.1em' },
+  { tag: tags.heading2, color: '#e06c75', fontWeight: 'bold' },
+  { tag: tags.emphasis, fontStyle: 'italic', color: '#c678dd' },
+  { tag: tags.strong, fontWeight: 'bold', color: '#e5c07b' },
+  { tag: tags.labelName, color: '#61afef' },
+  { tag: tags.definition(tags.name), color: '#e06c75' },
+  { tag: tags.processingInstruction, color: '#c678dd' },
+  { tag: tags.special(tags.string), color: '#56b6c2' },
+  { tag: tags.atom, color: '#d19a66' },
+  { tag: tags.contentSeparator, color: '#5c6370' },
+]);
+
+// ─── Keyboard shortcuts reference (Overleaf-compatible) ───
+const SHORTCUTS = [
+  { category: 'Editing', shortcuts: [
+    { keys: 'Ctrl+Z', mac: 'Cmd+Z', desc: 'Undo' },
+    { keys: 'Ctrl+Shift+Z', mac: 'Cmd+Shift+Z', desc: 'Redo' },
+    { keys: 'Ctrl+/', mac: 'Cmd+/', desc: 'Toggle comment' },
+    { keys: 'Tab', mac: 'Tab', desc: 'Indent more' },
+    { keys: 'Shift+Tab', mac: 'Shift+Tab', desc: 'Indent less' },
+    { keys: 'Ctrl+D', mac: 'Cmd+D', desc: 'Delete line' },
+    { keys: 'Ctrl+Shift+K', mac: 'Cmd+Shift+K', desc: 'Delete line' },
+    { keys: 'Alt+Up', mac: 'Alt+Up', desc: 'Move line up' },
+    { keys: 'Alt+Down', mac: 'Alt+Down', desc: 'Move line down' },
+    { keys: 'Shift+Alt+Up', mac: 'Shift+Alt+Up', desc: 'Copy line up' },
+    { keys: 'Shift+Alt+Down', mac: 'Shift+Alt+Down', desc: 'Copy line down' },
+    { keys: 'Ctrl+B', mac: 'Cmd+B', desc: 'Bold (\\textbf{})' },
+    { keys: 'Ctrl+I', mac: 'Cmd+I', desc: 'Italic (\\textit{})' },
+  ]},
+  { category: 'Navigation', shortcuts: [
+    { keys: 'Ctrl+F', mac: 'Cmd+F', desc: 'Find' },
+    { keys: 'Ctrl+H', mac: 'Cmd+H', desc: 'Find & Replace' },
+    { keys: 'Ctrl+G', mac: 'Cmd+G', desc: 'Find next' },
+    { keys: 'Ctrl+Shift+G', mac: 'Cmd+Shift+G', desc: 'Find previous' },
+    { keys: 'Ctrl+Home', mac: 'Cmd+Up', desc: 'Go to start' },
+    { keys: 'Ctrl+End', mac: 'Cmd+Down', desc: 'Go to end' },
+  ]},
+  { category: 'Selection', shortcuts: [
+    { keys: 'Ctrl+A', mac: 'Cmd+A', desc: 'Select all' },
+    { keys: 'Ctrl+Shift+Left', mac: 'Alt+Shift+Left', desc: 'Select word left' },
+    { keys: 'Ctrl+Shift+Right', mac: 'Alt+Shift+Right', desc: 'Select word right' },
+    { keys: 'Shift+Home', mac: 'Cmd+Shift+Left', desc: 'Select to line start' },
+    { keys: 'Shift+End', mac: 'Cmd+Shift+Right', desc: 'Select to line end' },
+  ]},
+  { category: 'Compile & View', shortcuts: [
+    { keys: 'Ctrl+S', mac: 'Cmd+S', desc: 'Compile (save)' },
+    { keys: 'Ctrl+Enter', mac: 'Cmd+Enter', desc: 'Compile' },
+    { keys: 'Ctrl+J', mac: 'Cmd+J', desc: 'SyncTeX forward search' },
+    { keys: 'Ctrl+Shift+F', mac: 'Cmd+Shift+F', desc: 'Toggle search panel' },
+  ]},
+];
+
+const isMac = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform);
+
+// Helper: wrap selection with LaTeX command
+function wrapSelection(view, before, after) {
+  const { from, to } = view.state.selection.main;
+  const selected = view.state.sliceDoc(from, to);
+  view.dispatch({
+    changes: { from, to, insert: before + selected + after },
+    selection: { anchor: from + before.length, head: from + before.length + selected.length }
+  });
+  return true;
+}
+
 const HOST = window.location.hostname;
 const API_URL = `http://${HOST}:3001`;
-const WS_URL = `ws://${HOST}:1234`;
+const WS_URL = `ws://${HOST}:3001/ws`;
 
 const userColors = ['#ff0055', '#00ff00', '#00d5ff', '#ffaa00', '#c800ff', '#ffff00'];
 const myColor = userColors[Math.floor(Math.random() * userColors.length)];
 
 // ─── File Tree Component (collapsible, delete, drag-drop between folders) ───
 
-function FileTreeNode({ node, activeFile, onSelect, onDelete, onMove, project, depth = 0 }) {
+function FileTreeNode({ node, activeFile, onSelect, onDelete, onMove, onRename, project, depth = 0 }) {
   const [collapsed, setCollapsed] = useState(false);
   const [isDragTarget, setIsDragTarget] = useState(false);
+  const [isRenaming, setIsRenaming] = useState(false);
+  const [renameName, setRenameName] = useState(node.name);
+  const renameInputRef = useRef(null);
+
+  useEffect(() => {
+    if (isRenaming && renameInputRef.current) {
+      renameInputRef.current.focus();
+      const dotIdx = node.name.lastIndexOf('.');
+      renameInputRef.current.setSelectionRange(0, dotIdx > 0 ? dotIdx : node.name.length);
+    }
+  }, [isRenaming]);
+
+  const submitRename = () => {
+    const trimmed = renameName.trim();
+    if (trimmed && trimmed !== node.name) {
+      onRename(node.path, trimmed);
+    }
+    setIsRenaming(false);
+  };
 
   const handleDragStart = (e) => {
     e.stopPropagation();
@@ -128,13 +269,25 @@ function FileTreeNode({ node, activeFile, onSelect, onDelete, onMove, project, d
           style={{ paddingLeft: `${8 + depth * 12}px` }}
         >
           <span className="folder-toggle">{collapsed ? '▸' : '▾'}</span>
-          <span>📂 {node.name}</span>
+          {isRenaming ? (
+            <input
+              ref={renameInputRef}
+              className="rename-input"
+              value={renameName}
+              onChange={(e) => setRenameName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') submitRename(); if (e.key === 'Escape') setIsRenaming(false); }}
+              onBlur={submitRename}
+              onClick={(e) => e.stopPropagation()}
+            />
+          ) : (
+            <span onDoubleClick={(e) => { e.stopPropagation(); setRenameName(node.name); setIsRenaming(true); }}>📂 {node.name}</span>
+          )}
           <button className="tree-delete-btn" title={`Delete folder ${node.name}`} onClick={(e) => { e.stopPropagation(); onDelete(node.path, true); }}>✕</button>
         </div>
         {!collapsed && (
           <div className="folder-children">
             {node.children.map(child => (
-              <FileTreeNode key={child.path} node={child} activeFile={activeFile} onSelect={onSelect} onDelete={onDelete} onMove={onMove} project={project} depth={depth + 1} />
+              <FileTreeNode key={child.path} node={child} activeFile={activeFile} onSelect={onSelect} onDelete={onDelete} onMove={onMove} onRename={onRename} project={project} depth={depth + 1} />
             ))}
           </div>
         )}
@@ -147,10 +300,22 @@ function FileTreeNode({ node, activeFile, onSelect, onDelete, onMove, project, d
       className={`file-item ${activeFile === node.path ? 'active' : ''}`}
       draggable
       onDragStart={handleDragStart}
-      onClick={() => onSelect(node.path)}
+      onClick={() => !isRenaming && onSelect(node.path)}
       style={{ paddingLeft: `${8 + depth * 12}px` }}
     >
-      <span>📄 {node.name}</span>
+      {isRenaming ? (
+        <input
+          ref={renameInputRef}
+          className="rename-input"
+          value={renameName}
+          onChange={(e) => setRenameName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') submitRename(); if (e.key === 'Escape') setIsRenaming(false); }}
+          onBlur={submitRename}
+          onClick={(e) => e.stopPropagation()}
+        />
+      ) : (
+        <span onDoubleClick={(e) => { e.stopPropagation(); setRenameName(node.name); setIsRenaming(true); }}>📄 {node.name}</span>
+      )}
       <button className="tree-delete-btn" title={`Delete ${node.name}`} onClick={(e) => { e.stopPropagation(); onDelete(node.path, false); }}>✕</button>
     </div>
   );
@@ -160,19 +325,50 @@ function FileTreeNode({ node, activeFile, onSelect, onDelete, onMove, project, d
 
 function LoginPage({ onLogin }) {
   const [key, setKey] = useState('');
+  const [ldapUsername, setLdapUsername] = useState('');
+  const [ldapPassword, setLdapPassword] = useState('');
+  const [displayName, setDisplayName] = useState(() => localStorage.getItem('vividtex-username') || '');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [ldapEnabled, setLdapEnabled] = useState(false);
+  const [loginMode, setLoginMode] = useState('key'); // 'key' or 'ldap'
+
+  useEffect(() => {
+    axios.get(`${API_URL}/api/auth/config`).then(res => {
+      if (res.data.ldap) {
+        setLdapEnabled(true);
+        setLoginMode('ldap');
+      }
+    }).catch(() => {});
+  }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (!key.trim()) return;
     setLoading(true);
     setError('');
     try {
-      const res = await axios.post(`${API_URL}/api/auth/login`, { key: key.trim() });
-      onLogin(key.trim(), res.data);
+      if (loginMode === 'ldap') {
+        if (!ldapUsername.trim() || !ldapPassword) {
+          setError('Username and password required');
+          setLoading(false);
+          return;
+        }
+        const res = await axios.post(`${API_URL}/api/auth/login`, {
+          username: ldapUsername.trim(),
+          password: ldapPassword,
+        });
+        const name = res.data.username || ldapUsername.trim();
+        localStorage.setItem('vividtex-username', name);
+        onLogin(res.data.token, { ...res.data, username: name });
+      } else {
+        if (!key.trim()) { setLoading(false); return; }
+        const res = await axios.post(`${API_URL}/api/auth/login`, { key: key.trim() });
+        const name = displayName.trim() || 'Anonymous';
+        localStorage.setItem('vividtex-username', name);
+        onLogin(key.trim(), { ...res.data, username: name });
+      }
     } catch (e) {
-      setError(e.response?.data?.error || 'Invalid access key');
+      setError(e.response?.data?.error || 'Login failed');
     }
     setLoading(false);
   };
@@ -181,16 +377,54 @@ function LoginPage({ onLogin }) {
     <div className="login-page">
       <div className="login-card">
         <img src="/logo.png" alt="vividTex" className="login-logo" />
-        <p className="login-subtitle">Enter your access key to continue</p>
+        {ldapEnabled && (
+          <div className="login-mode-toggle">
+            <button className={`login-mode-btn ${loginMode === 'ldap' ? 'active' : ''}`} type="button" onClick={() => setLoginMode('ldap')}>School Login</button>
+            <button className={`login-mode-btn ${loginMode === 'key' ? 'active' : ''}`} type="button" onClick={() => setLoginMode('key')}>Access Key</button>
+          </div>
+        )}
         <form onSubmit={handleSubmit}>
-          <input
-            type="password"
-            className="modal-input"
-            placeholder="Access key"
-            value={key}
-            onChange={(e) => setKey(e.target.value)}
-            autoFocus
-          />
+          {loginMode === 'ldap' ? (
+            <>
+              <p className="login-subtitle">Sign in with your school account</p>
+              <input
+                type="text"
+                className="modal-input"
+                placeholder="Username"
+                value={ldapUsername}
+                onChange={(e) => setLdapUsername(e.target.value)}
+                autoFocus
+              />
+              <input
+                type="password"
+                className="modal-input"
+                placeholder="Password"
+                value={ldapPassword}
+                onChange={(e) => setLdapPassword(e.target.value)}
+                style={{ marginTop: '0.5rem' }}
+              />
+            </>
+          ) : (
+            <>
+              <p className="login-subtitle">Enter your access key to continue</p>
+              <input
+                type="text"
+                className="modal-input"
+                placeholder="Your name (shown to collaborators)"
+                value={displayName}
+                onChange={(e) => setDisplayName(e.target.value)}
+                autoFocus
+              />
+              <input
+                type="password"
+                className="modal-input"
+                placeholder="Access key"
+                value={key}
+                onChange={(e) => setKey(e.target.value)}
+                style={{ marginTop: '0.5rem' }}
+              />
+            </>
+          )}
           {error && <p className="login-error">{error}</p>}
           <button type="submit" className="btn-primary login-btn" disabled={loading}>
             {loading ? 'Verifying...' : 'Login'}
@@ -287,7 +521,7 @@ function AdminPanel({ allProjects }) {
       setNewGroupName('');
       loadGroups();
     } catch (e) {
-      alert('Failed to create group: ' + (e.response?.data?.error || e.message));
+      toast('Failed to create group: ' + (e.response?.data?.error || e.message), 'error');
     }
   };
 
@@ -296,7 +530,7 @@ function AdminPanel({ allProjects }) {
     try {
       await axios.delete(`${API_URL}/api/admin/groups/${encodeURIComponent(name)}`);
       loadGroups();
-    } catch (e) { alert('Failed to delete group'); }
+    } catch (e) { toast('Failed to delete group', 'error'); }
   };
 
   const handleRegenerateKey = async (name) => {
@@ -304,7 +538,7 @@ function AdminPanel({ allProjects }) {
     try {
       await axios.post(`${API_URL}/api/admin/groups/${encodeURIComponent(name)}/regenerate-key`);
       loadGroups();
-    } catch (e) { alert('Failed to regenerate key'); }
+    } catch (e) { toast('Failed to regenerate key', 'error'); }
   };
 
   const toggleProject = async (groupName, projectName) => {
@@ -316,7 +550,7 @@ function AdminPanel({ allProjects }) {
     try {
       await axios.put(`${API_URL}/api/admin/groups/${encodeURIComponent(groupName)}`, { projects: updated });
       loadGroups();
-    } catch (e) { alert('Failed to update group'); }
+    } catch (e) { toast('Failed to update group', 'error'); }
   };
 
   const copyKey = (key) => {
@@ -410,7 +644,7 @@ function Homepage({ onProjectSelect, auth, onLogout }) {
       setNewName('');
       loadProjects();
     } catch (e) {
-      alert(e.response?.data?.error || 'Failed to create project');
+      toast(e.response?.data?.error || 'Failed to create project', 'error');
     }
   };
 
@@ -425,7 +659,7 @@ function Homepage({ onProjectSelect, auth, onLogout }) {
         loadProjects();
       }
     } catch (err) {
-      alert('Import failed: ' + (err.response?.data?.error || err.message));
+      toast('Import failed: ' + (err.response?.data?.error || err.message), 'error');
     }
     e.target.value = '';
   };
@@ -436,7 +670,7 @@ function Homepage({ onProjectSelect, auth, onLogout }) {
       await axios.delete(`${API_URL}/api/projects/${encodeURIComponent(name)}`);
       loadProjects();
     } catch (e) {
-      alert('Delete failed: ' + (e.response?.data?.error || e.message));
+      toast('Delete failed: ' + (e.response?.data?.error || e.message), 'error');
     }
   };
 
@@ -457,7 +691,7 @@ function Homepage({ onProjectSelect, auth, onLogout }) {
         loadProjects();
       }
     } catch (e) {
-      alert('Clone failed: ' + (e.response?.data?.error || e.message));
+      toast('Clone failed: ' + (e.response?.data?.error || e.message), 'error');
     }
     setGitCloning(false);
   };
@@ -579,10 +813,10 @@ function App() {
 
   // Show login page if not authenticated
   if (!authKey || !authInfo) {
-    return <LoginPage onLogin={handleLogin} />;
+    return <><LoginPage onLogin={handleLogin} /><ToastContainer /></>;
   }
 
-  return <AppWorkspace auth={authInfo} onLogout={handleLogout} />;
+  return <><AppWorkspace auth={authInfo} onLogout={handleLogout} /><ToastContainer /></>;
 }
 
 // ─── App Workspace (authenticated) ──────────────────────
@@ -592,7 +826,7 @@ function AppWorkspace({ auth, onLogout }) {
   const [fileTree, setFileTree] = useState([]);
   const [activeFile, setActiveFile] = useState(null);
   const [connectedUsers, setConnectedUsers] = useState([]);
-  const [username, setUsername] = useState('Anonymous');
+  const [username] = useState(() => localStorage.getItem('vividtex-username') || auth?.username || 'Anonymous');
   const [status, setStatus] = useState('Disconnected');
   const [pdfUrl, setPdfUrl] = useState(null);
   const [isCompiling, setIsCompiling] = useState(false);
@@ -614,7 +848,19 @@ function AppWorkspace({ auth, onLogout }) {
   const [gitGraphLines, setGitGraphLines] = useState([]);
   const [gitPanelTab, setGitPanelTab] = useState('commit'); // 'commit', 'branches', 'log'
   const [newBranchName, setNewBranchName] = useState('');
-
+  const [showShortcuts, setShowShortcuts] = useState(false);
+  const [compileLog, setCompileLog] = useState(null);
+  const [showCompileLog, setShowCompileLog] = useState(false);
+  const [compileStatus, setCompileStatus] = useState(null); // 'success' | 'error' | null
+  const [wordCount, setWordCount] = useState(0);
+  const [theme, setTheme] = useState(() => localStorage.getItem('vividtex-theme') || 'dark');
+  const [autoCompile, setAutoCompile] = useState(() => localStorage.getItem('vividtex-autocompile') === 'true');
+  const [trashItems, setTrashItems] = useState([]);
+  const [showTrash, setShowTrash] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState([]);
+  const [showSearch, setShowSearch] = useState(false);
+  const [openTabs, setOpenTabs] = useState([]);
   const editorContainerRef = useRef(null);
   const editorViewRef = useRef(null);
   const providerRef = useRef(null);
@@ -625,6 +871,8 @@ function AppWorkspace({ auth, onLogout }) {
   const projectMenuRef = useRef(null);
   const zipInputRef = useRef(null);
   const handleCompileRef = useRef(null);
+  const autoCompileTimerRef = useRef(null);
+  const autoCompileRef = useRef(false);
 
   const handlePaneResizerMouseDown = (e) => {
     isResizingPaneRef.current = true;
@@ -632,6 +880,18 @@ function AppWorkspace({ auth, onLogout }) {
     document.body.classList.add('resizing-pane');
     e.preventDefault();
   };
+
+  // Theme effect
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('vividtex-theme', theme);
+  }, [theme]);
+
+  // Auto-compile ref sync
+  useEffect(() => {
+    autoCompileRef.current = autoCompile;
+    localStorage.setItem('vividtex-autocompile', autoCompile);
+  }, [autoCompile]);
 
   const fetchTree = useCallback(async () => {
     if (!currentProject) return;
@@ -642,7 +902,13 @@ function AppWorkspace({ auth, onLogout }) {
       if (data.mainFile) {
         setMainFile(data.mainFile);
         // Set activeFile to mainFile on first load (when null)
-        setActiveFile(prev => prev || data.mainFile);
+        setActiveFile(prev => {
+          if (!prev) {
+            setOpenTabs(tabs => tabs.includes(data.mainFile) ? tabs : [...tabs, data.mainFile]);
+            return data.mainFile;
+          }
+          return prev;
+        });
       }
     } catch (e) { console.error("Failed to load file tree", e); }
   }, [currentProject]);
@@ -682,7 +948,7 @@ function AppWorkspace({ auth, onLogout }) {
       await axios.post(`${API_URL}/api/projects/${encodeURIComponent(currentProject)}/folder`, { path: name.trim() });
       fetchTree();
     } catch (e) {
-      alert('Failed to create folder: ' + (e.response?.data?.error || e.message));
+      toast('Failed to create folder: ' + (e.response?.data?.error || e.message), 'error');
     }
   };
 
@@ -694,7 +960,7 @@ function AppWorkspace({ auth, onLogout }) {
       fetchTree();
       if (activeFile === filePath) setActiveFile(mainFile);
     } catch (e) {
-      alert('Delete failed: ' + (e.response?.data?.error || e.message));
+      toast('Delete failed: ' + (e.response?.data?.error || e.message), 'error');
     }
   };
 
@@ -704,7 +970,18 @@ function AppWorkspace({ auth, onLogout }) {
       await axios.post(`${API_URL}/api/projects/${encodeURIComponent(currentProject)}/move`, { source, destination });
       fetchTree();
     } catch (e) {
-      alert('Move failed: ' + (e.response?.data?.error || e.message));
+      toast('Move failed: ' + (e.response?.data?.error || e.message), 'error');
+    }
+  };
+
+  const handleRenameFile = async (filePath, newName) => {
+    if (!currentProject || !newName) return;
+    try {
+      const res = await axios.post(`${API_URL}/api/projects/${encodeURIComponent(currentProject)}/rename`, { filePath, newName });
+      fetchTree();
+      if (activeFile === filePath) setActiveFile(res.data.newPath);
+    } catch (e) {
+      toast('Rename failed: ' + (e.response?.data?.error || e.message), 'error');
     }
   };
 
@@ -723,9 +1000,69 @@ function AppWorkspace({ auth, onLogout }) {
       fetchTree();
     } catch (err) {
       console.error("Upload failed", err);
-      alert("Upload failed");
+      toast('Upload failed', 'error');
     }
   };
+
+  // ─── Trash ───
+  const fetchTrash = useCallback(async () => {
+    if (!currentProject) return;
+    try {
+      const res = await axios.get(`${API_URL}/api/projects/${encodeURIComponent(currentProject)}/trash`);
+      setTrashItems(res.data || []);
+    } catch { setTrashItems([]); }
+  }, [currentProject]);
+
+  const handleRestoreTrash = async (trashName) => {
+    try {
+      await axios.post(`${API_URL}/api/projects/${encodeURIComponent(currentProject)}/trash/restore`, { trashName });
+      fetchTrash();
+      fetchTree();
+      toast('File restored', 'success');
+    } catch (e) {
+      toast('Restore failed: ' + (e.response?.data?.error || e.message), 'error');
+    }
+  };
+
+  const handleEmptyTrash = async () => {
+    if (!confirm('Permanently delete all trashed items? This cannot be undone.')) return;
+    try {
+      await axios.delete(`${API_URL}/api/projects/${encodeURIComponent(currentProject)}/trash`);
+      setTrashItems([]);
+      toast('Trash emptied', 'success');
+    } catch (e) {
+      toast('Failed to empty trash', 'error');
+    }
+  };
+
+  // ─── Search across files ───
+  const handleSearch = useCallback(async (query) => {
+    if (!currentProject || !query.trim()) { setSearchResults([]); return; }
+    try {
+      const res = await axios.get(`${API_URL}/api/projects/${encodeURIComponent(currentProject)}/search?q=${encodeURIComponent(query.trim())}`);
+      setSearchResults(res.data || []);
+    } catch { setSearchResults([]); }
+  }, [currentProject]);
+
+  // ─── Multi-file tabs ───
+  const openFileInTab = useCallback((filePath) => {
+    setOpenTabs(prev => {
+      if (prev.includes(filePath)) return prev;
+      return [...prev, filePath];
+    });
+    setActiveFile(filePath);
+  }, []);
+
+  const closeTab = useCallback((filePath, e) => {
+    if (e) e.stopPropagation();
+    setOpenTabs(prev => {
+      const next = prev.filter(f => f !== filePath);
+      if (activeFile === filePath) {
+        setActiveFile(next.length > 0 ? next[next.length - 1] : null);
+      }
+      return next;
+    });
+  }, [activeFile]);
 
   // Recursively read all files from a dropped directory entry
   const readEntriesRecursively = (entry, basePath = '') => {
@@ -806,18 +1143,37 @@ function AppWorkspace({ auth, onLogout }) {
   const handleCompile = async () => {
     if (!currentProject) return;
     setIsCompiling(true);
+    setCompileStatus(null);
     try {
       if (providerRef.current && activeFile) {
         const currentContent = providerRef.current.document.getText('codemirror').toString();
         await axios.post(`${API_URL}/api/projects/${encodeURIComponent(currentProject)}/file?path=${encodeURIComponent(activeFile)}`, { content: currentContent });
       }
       const res = await axios.post(`${API_URL}/api/projects/${encodeURIComponent(currentProject)}/compile`);
+      setCompileLog({ stdout: res.data.stdout || '', stderr: res.data.stderr || '', success: res.data.success });
       if (res.data.success) {
+        setCompileStatus('success');
+        toast('Compilation successful', 'success', 3000);
         const pwd = localStorage.getItem('vividtex-key') || '';
         setPdfUrl(`http://${window.location.host}/pdfjs/web/viewer.html?file=${encodeURIComponent(API_URL + '/api/projects/' + encodeURIComponent(currentProject) + '/pdf?t=' + Date.now() + '&token=' + pwd)}#view=FitH&pagemode=none`);
+      } else {
+        setCompileStatus('error');
+        setShowCompileLog(true);
+        toast('Compilation finished with errors', 'error');
       }
-    } catch (e) { console.error("Compilation failed", e); }
-    finally { setIsCompiling(false); }
+    } catch (e) {
+      setCompileStatus('error');
+      const data = e.response?.data;
+      if (data) {
+        setCompileLog({ stdout: data.stdout || '', stderr: data.stderr || '', success: false, message: data.message });
+        setShowCompileLog(true);
+      }
+      toast('Compilation failed', 'error');
+    }
+    finally {
+      setIsCompiling(false);
+      setTimeout(() => setCompileStatus(null), 3000);
+    }
   };
   handleCompileRef.current = handleCompile;
 
@@ -835,7 +1191,7 @@ function AppWorkspace({ auth, onLogout }) {
 
   const handleGitCommit = async () => {
     if (!currentProject) return;
-    if (!gitCommitMsg.trim()) { alert('Please enter a commit message'); return; }
+    if (!gitCommitMsg.trim()) { toast('Please enter a commit message', 'warning'); return; }
     try {
       if (providerRef.current && activeFile) {
         const currentContent = providerRef.current.document.getText('codemirror').toString();
@@ -851,10 +1207,10 @@ function AppWorkspace({ auth, onLogout }) {
         fetchGitDiff();
         fetchGitLog();
       } else {
-        alert('Commit failed: ' + (res.data.error || 'Unknown error'));
+        toast('Commit failed: ' + (res.data.error || 'Unknown error'), 'error');
       }
     } catch (e) {
-      alert('Commit failed: ' + (e.response?.data?.error || e.message));
+      toast('Commit failed: ' + (e.response?.data?.error || e.message), 'error');
     }
   };
 
@@ -870,7 +1226,7 @@ function AppWorkspace({ auth, onLogout }) {
         fetchGitLog();
       }
     } catch (e) {
-      alert('Pull failed: ' + (e.response?.data?.error || e.message));
+      toast('Pull failed: ' + (e.response?.data?.error || e.message), 'error');
       setStatus('Pull failed');
     }
   };
@@ -892,7 +1248,7 @@ function AppWorkspace({ auth, onLogout }) {
           if (res2.data.success) { setStatus('Pushed (upstream set)'); fetchGitLog(); return; }
         } catch (_) {}
       }
-      alert('Push failed: ' + (e.response?.data?.error || e.message));
+      toast('Push failed: ' + (e.response?.data?.error || e.message), 'error');
       setStatus('Push failed');
     }
   };
@@ -911,7 +1267,7 @@ function AppWorkspace({ auth, onLogout }) {
         fetchGitLog();
       }
     } catch (e) {
-      alert('Checkout failed: ' + (e.response?.data?.error || e.message));
+      toast('Checkout failed: ' + (e.response?.data?.error || e.message), 'error');
       setStatus('Checkout failed');
     }
   };
@@ -930,7 +1286,7 @@ function AppWorkspace({ auth, onLogout }) {
         fetchGitStatus();
       }
     } catch (e) {
-      alert('Create branch failed: ' + (e.response?.data?.error || e.message));
+      toast('Create branch failed: ' + (e.response?.data?.error || e.message), 'error');
     }
   };
 
@@ -949,7 +1305,7 @@ function AppWorkspace({ auth, onLogout }) {
       await axios.post(`${API_URL}/api/projects`, { name: name.trim() });
       setCurrentProject(name.trim());
     } catch (e) {
-      alert(e.response?.data?.error || 'Failed to create project');
+      toast(e.response?.data?.error || 'Failed to create project', 'error');
     }
   };
 
@@ -969,7 +1325,7 @@ function AppWorkspace({ auth, onLogout }) {
         setCurrentProject(res.data.name);
       }
     } catch (err) {
-      alert('Import failed: ' + (err.response?.data?.error || err.message));
+      toast('Import failed: ' + (err.response?.data?.error || err.message), 'error');
     }
     e.target.value = '';
   };
@@ -1009,23 +1365,17 @@ function AppWorkspace({ auth, onLogout }) {
     };
   }, []);
 
-  // Initial username setup
-  useEffect(() => {
-    let name = '';
-    try { name = localStorage.getItem('collab-username'); } catch (e) {}
-    if (!name) {
-      name = prompt("Enter your name for collaboration:") || `User-${Math.floor(Math.random() * 1000)}`;
-      try { localStorage.setItem('collab-username', name); } catch (e) {}
-    }
-    setUsername(name);
-  }, []);
-
   // Load project data when project changes
   useEffect(() => {
     if (!currentProject) return;
     setPdfUrl(null);
     // activeFile will be set by fetchTree once we know the mainFile
     setActiveFile(null);
+    setOpenTabs([]);
+    setShowTrash(false);
+    setShowSearch(false);
+    setSearchQuery('');
+    setSearchResults([]);
     fetchTree().then(() => {
       // After tree is fetched, mainFile state is updated; set active file
     });
@@ -1036,7 +1386,7 @@ function AppWorkspace({ auth, onLogout }) {
         try {
           const res = await axios.post(`${API_URL}/api/projects/${encodeURIComponent(currentProject)}/synctex/edit`, { page: e.data.page, x: e.data.x, y: e.data.y });
           if (res.data && res.data.file) {
-            setActiveFile(res.data.file);
+            openFileInTab(res.data.file);
             setJumpToLine({ line: res.data.line, column: res.data.column || 0, t: Date.now() });
           }
         } catch (err) { console.warn('Inverse SyncTeX failed', err); }
@@ -1132,18 +1482,61 @@ function AppWorkspace({ auth, onLogout }) {
         color: myColor,
       });
 
+      const isTexFile = /\.(tex|sty|cls|bib|dtx|ins|ltx)$/i.test(activeFile);
+
       const state = EditorState.create({
         doc: ytext.toString(),
         extensions: [
           lineNumbers(),
+          highlightActiveLineGutter(),
+          highlightSpecialChars(),
           history(),
+          foldGutter(),
           drawSelection(),
           dropCursor(),
           EditorView.lineWrapping,
+          indentOnInput(),
+          bracketMatching(),
+          rectangularSelection(),
+          crosshairCursor(),
+          highlightActiveLine(),
+          highlightSelectionMatches(),
           highlightField,
+          // Syntax highlighting
+          ...(isTexFile ? [
+            latexLang({ autoCloseTags: true, enableLinting: false, enableTooltips: true, enableAutocomplete: true }),
+            linter(latexLinter({ checkMissingDocumentEnv: false })),
+            syntaxHighlighting(darkLatexHighlight),
+            lintGutter(),
+          ] : [
+            syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+          ]),
+          // Autocomplete
+          autocompletion({ defaultKeymap: true, activateOnTyping: true }),
+          // Dark editor theme
+          EditorView.theme({
+            '&': { backgroundColor: 'transparent' },
+            '.cm-content': { caretColor: '#fff' },
+            '.cm-matchingBracket': { backgroundColor: 'rgba(139, 92, 246, 0.4)', outline: '1px solid rgba(139, 92, 246, 0.6)' },
+            '.cm-tooltip-autocomplete': {
+              backgroundColor: '#1e1e2e !important',
+              border: '1px solid rgba(255,255,255,0.1) !important',
+              borderRadius: '8px !important',
+            },
+            '.cm-tooltip-autocomplete ul li[aria-selected]': {
+              backgroundColor: 'rgba(139, 92, 246, 0.3) !important',
+            },
+            '.cm-completionLabel': { color: '#f4f4f5' },
+            '.cm-completionDetail': { color: '#71717a', fontStyle: 'italic' },
+            '.cm-foldGutter span': { color: '#71717a', fontSize: '1em', padding: '0 2px' },
+            '.cm-foldPlaceholder': { backgroundColor: 'rgba(139, 92, 246, 0.2)', border: '1px solid rgba(139, 92, 246, 0.4)', color: '#8b5cf6', borderRadius: '3px', padding: '0 4px' },
+          }, { dark: true }),
+          // Keymaps — Overleaf-compatible
           keymap.of([
-            ...defaultKeymap,
-            ...historyKeymap,
+            // Prevent defaults we override
+            { key: 'Ctrl-s', run: () => { handleCompileRef.current && handleCompileRef.current(); return true; }, preventDefault: true },
+            { key: 'Ctrl-Enter', run: () => { handleCompileRef.current && handleCompileRef.current(); return true; }, preventDefault: true },
+            // SyncTeX
             { key: 'Ctrl-j', run: (cmView) => {
               const pos = cmView.state.selection.main.head;
               const lineObj = cmView.state.doc.lineAt(pos);
@@ -1155,11 +1548,44 @@ function AppWorkspace({ auth, onLogout }) {
               });
               return true;
             }},
-            { key: 'Ctrl-s', run: () => {
-              handleCompileRef.current && handleCompileRef.current();
-              return true;
-            }, preventDefault: true }
+            // Bold / Italic wrapping
+            { key: 'Ctrl-b', run: (v) => wrapSelection(v, '\\textbf{', '}'), preventDefault: true },
+            { key: 'Ctrl-i', run: (v) => wrapSelection(v, '\\textit{', '}'), preventDefault: true },
+            // Indent with tab
+            indentWithTab,
+            // Comment toggle
+            { key: 'Ctrl-/', run: toggleComment },
+            // Delete line (Overleaf uses Ctrl+D and Ctrl+Shift+K)
+            { key: 'Ctrl-d', run: deleteLine, preventDefault: true },
+            { key: 'Ctrl-Shift-k', run: deleteLine },
+            // Move lines
+            { key: 'Alt-ArrowUp', run: moveLineUp },
+            { key: 'Alt-ArrowDown', run: moveLineDown },
+            // Copy lines
+            { key: 'Shift-Alt-ArrowUp', run: copyLineUp },
+            { key: 'Shift-Alt-ArrowDown', run: copyLineDown },
+            // Standard keymaps
+            ...defaultKeymap,
+            ...historyKeymap,
+            ...completionKeymap,
+            ...searchKeymap,
+            ...foldKeymap,
+            ...lintKeymap,
           ]),
+          // Word count & auto-compile listeners
+          EditorView.updateListener.of(update => {
+            if (update.docChanged) {
+              const text = update.state.doc.toString();
+              const cleaned = text.replace(/\\[a-zA-Z]+/g, '').replace(/[{}\\%$&_^~#\[\]]/g, ' ');
+              setWordCount(cleaned.trim().split(/\s+/).filter(w => w.length > 0).length);
+              if (autoCompileRef.current) {
+                if (autoCompileTimerRef.current) clearTimeout(autoCompileTimerRef.current);
+                autoCompileTimerRef.current = setTimeout(() => { handleCompileRef.current?.(); }, 5000);
+              }
+            }
+          }),
+          // Spellcheck
+          EditorView.contentAttributes.of({ spellcheck: "true" }),
           yCollab(ytext, hpProvider.awareness, { undoManager: new Y.UndoManager(ytext) })
         ],
       });
@@ -1168,6 +1594,10 @@ function AppWorkspace({ auth, onLogout }) {
         editorContainerRef.current.innerHTML = '';
         view = new EditorView({ state, parent: editorContainerRef.current });
         editorViewRef.current = view;
+        // Set initial word count
+        const initText = state.doc.toString();
+        const initCleaned = initText.replace(/\\[a-zA-Z]+/g, '').replace(/[{}\\%$&_^~#\[\]]/g, ' ');
+        setWordCount(initCleaned.trim().split(/\s+/).filter(w => w.length > 0).length);
       }
     };
     initEditor();
@@ -1195,7 +1625,7 @@ function AppWorkspace({ auth, onLogout }) {
             {isSidebarVisible ? "❮" : "❯"}
           </button>
 
-          <span className="header-title" onClick={() => setCurrentProject(null)} style={{ cursor: 'pointer' }} title="Back to projects">vividTex</span>
+          <img src="/logo.png" alt="vividTex" className="header-logo" onClick={() => setCurrentProject(null)} title="Back to projects" />
 
           <div className="project-menu-wrapper" ref={projectMenuRef}>
             <button className="btn-secondary project-name-btn" onClick={() => setShowProjectMenu(!showProjectMenu)}>
@@ -1226,10 +1656,13 @@ function AppWorkspace({ auth, onLogout }) {
           </div>
         </div>
         <div className="header-actions">
+          <button className="btn-secondary btn-small" onClick={() => setTheme(t => t === 'dark' ? 'light' : 'dark')} title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}>{theme === 'dark' ? '☀️' : '🌙'}</button>
+          <button className={`btn-secondary btn-small ${autoCompile ? 'active-toggle' : ''}`} onClick={() => setAutoCompile(a => !a)} title={autoCompile ? 'Disable auto-compile' : 'Enable auto-compile (5s delay)'}>{autoCompile ? '⏸️' : '⏵'} Auto</button>
+          <button className="btn-secondary btn-small" onClick={() => setShowShortcuts(true)} title="Keyboard shortcuts">⌨️</button>
           <button className="btn-secondary" onClick={handleExportZip} title="Download project as ZIP">📦 Export</button>
           <button className="btn-secondary" onClick={handleDownloadPdf} disabled={!pdfUrl}>⬇️ PDF</button>
           {isGitRepo && <button className="btn-secondary" onClick={() => openGitPanel('commit')} title="Git commit, pull, push">🔀 Git</button>}
-          <button className="btn-primary" onClick={handleCompile} disabled={isCompiling}>
+          <button className={`btn-primary ${compileStatus === 'success' ? 'compile-success' : compileStatus === 'error' ? 'compile-error' : ''}`} onClick={handleCompile} disabled={isCompiling}>
             {isCompiling ? '⚙️ Compiling...' : '🚀 Compile'}
           </button>
           <button className="btn-secondary btn-small" onClick={onLogout} title="Logout">🔒</button>
@@ -1245,6 +1678,8 @@ function AppWorkspace({ auth, onLogout }) {
           <div className="sidebar-header">
             <span>Explorer</span>
             <div className="sidebar-header-actions">
+              <button className="btn-secondary upload-btn" title="Search in files" style={{ padding: '4px 10px', fontSize: '0.75rem' }} onClick={() => setShowSearch(v => !v)}>🔍</button>
+              <button className="btn-secondary upload-btn" title="Trash" style={{ padding: '4px 10px', fontSize: '0.75rem' }} onClick={() => { setShowTrash(v => !v); fetchTrash(); }}>🗑️</button>
               <button className="btn-secondary upload-btn" title="New Folder" style={{ padding: '4px 10px', fontSize: '0.75rem' }} onClick={handleCreateFolder}>📁+</button>
               <label className="btn-secondary upload-btn" title="Upload Files" style={{ padding: '4px 10px', fontSize: '0.75rem' }}>
                 <span>📄+</span>
@@ -1256,17 +1691,75 @@ function AppWorkspace({ auth, onLogout }) {
               </label>
             </div>
           </div>
+          {showSearch && (
+            <div className="sidebar-search">
+              <input
+                type="text"
+                className="modal-input"
+                placeholder="Search in files..."
+                value={searchQuery}
+                onChange={(e) => { setSearchQuery(e.target.value); handleSearch(e.target.value); }}
+                autoFocus
+              />
+              {searchResults.length > 0 && (
+                <div className="search-results">
+                  {searchResults.map((r, i) => (
+                    <div key={i} className="search-result-item" onClick={() => { openFileInTab(r.file); setShowSearch(false); }}>
+                      <span className="search-result-file">{r.file}:{r.line}</span>
+                      <span className="search-result-text">{r.text}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
           <div className="file-tree">
             {isDragOver && <div className="drop-indicator">Drop files here to upload</div>}
             {fileTree.map(node => (
-              <FileTreeNode key={node.path} node={node} activeFile={activeFile} onSelect={setActiveFile} onDelete={handleDeleteFile} onMove={handleMoveFile} project={currentProject} />
+              <FileTreeNode key={node.path} node={node} activeFile={activeFile} onSelect={openFileInTab} onDelete={handleDeleteFile} onMove={handleMoveFile} onRename={handleRenameFile} project={currentProject} />
             ))}
           </div>
+          {showTrash && (
+            <div className="trash-panel">
+              <div className="trash-header">
+                <span>🗑️ Trash</span>
+                {trashItems.length > 0 && <button className="btn-secondary btn-tiny" onClick={handleEmptyTrash}>Empty</button>}
+              </div>
+              {trashItems.length === 0 ? (
+                <p className="trash-empty">Trash is empty</p>
+              ) : (
+                <div className="trash-items">
+                  {trashItems.map(item => (
+                    <div key={item.trashName} className="trash-item">
+                      <span className="trash-item-name" title={item.originalPath}>{item.originalPath}</span>
+                      <button className="btn-secondary btn-tiny" onClick={() => handleRestoreTrash(item.trashName)}>↩ Restore</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </aside>
 
         <div className="workspace-resizable-area" ref={resizableAreaRef}>
           <section className="editor-pane panel" style={{ flex: `0 0 ${editorWidth}%` }}>
-            <div className="editor-header">{activeFile}</div>
+            {openTabs.length > 0 && (
+              <div className="editor-tabs">
+                {openTabs.map(tab => (
+                  <div key={tab} className={`editor-tab ${tab === activeFile ? 'active' : ''}`} onClick={() => setActiveFile(tab)}>
+                    <span className="tab-name">{tab.split('/').pop()}</span>
+                    <button className="tab-close" onClick={(e) => closeTab(tab, e)}>✕</button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="editor-header">
+              <span className="editor-header-filename">{activeFile}</span>
+              <div className="editor-header-right">
+                {activeFile && /\.(tex|sty|cls|bib|dtx|ins|ltx)$/i.test(activeFile) && <span className="word-count-badge">{wordCount.toLocaleString()} words</span>}
+                {compileLog && <button className={`btn-secondary btn-tiny ${showCompileLog ? 'active-toggle' : ''} ${compileLog.success ? '' : 'log-error'}`} onClick={() => setShowCompileLog(v => !v)} title="Toggle compilation log">📋 Log</button>}
+              </div>
+            </div>
             <div className="cm-editor" ref={editorContainerRef} style={{ display: /\.(png|jpe?g|gif|svg|webp|pdf)$/i.test(activeFile) ? 'none' : 'flex' }}></div>
             {/\.(png|jpe?g|gif|svg|webp)$/i.test(activeFile) && (
               <div className="image-viewer-container">
@@ -1278,6 +1771,61 @@ function AppWorkspace({ auth, onLogout }) {
                   <iframe className="pdf-frame" src={`http://${window.location.host}/pdfjs/web/viewer.html?file=${encodeURIComponent(API_URL + '/api/projects/' + encodeURIComponent(currentProject) + '/static/' + activeFile + '?token=' + (localStorage.getItem('vividtex-key') || ''))}#view=FitH&pagemode=none`} />
                </div>
             )}
+            {/* Compile Log Panel */}
+            {showCompileLog && compileLog && (
+              <div className="compile-log-panel">
+                <div className="compile-log-header">
+                  <span>{compileLog.success ? '✅ Compilation Succeeded' : '❌ Compilation Failed'}{compileLog.message ? ` — ${compileLog.message}` : ''}</span>
+                  <div>
+                    <button className={`btn-secondary btn-tiny`} style={{ marginRight: 4 }} onClick={() => {
+                      const el = document.querySelector('.compile-log-content');
+                      if (el) el.classList.toggle('show-raw');
+                    }}>Raw</button>
+                    <button className="compile-log-close" onClick={() => setShowCompileLog(false)}>✕</button>
+                  </div>
+                </div>
+                {(() => {
+                  const log = compileLog.stdout || compileLog.stderr || '';
+                  const errors = [];
+                  const lines = log.split('\n');
+                  for (let i = 0; i < lines.length; i++) {
+                    if (lines[i].startsWith('! ')) {
+                      const msg = lines[i].substring(2);
+                      let file = '', line = '';
+                      for (let j = i + 1; j < Math.min(i + 5, lines.length); j++) {
+                        const m = lines[j].match(/^l\.(\d+)/);
+                        if (m) { line = m[1]; break; }
+                      }
+                      for (let j = i - 1; j >= Math.max(0, i - 10); j--) {
+                        const fm = lines[j].match(/^\(\.\/([^\s)]+)/);
+                        if (fm) { file = fm[1]; break; }
+                      }
+                      errors.push({ msg, file, line, idx: i });
+                    }
+                    const wm = lines[i].match(/^LaTeX Warning:\s*(.+)/);
+                    if (wm) errors.push({ msg: wm[1], file: '', line: '', idx: i, warn: true });
+                  }
+                  return (
+                    <div className="compile-log-content">
+                      {errors.length > 0 && (
+                        <div className="compile-errors">
+                          {errors.map((e, i) => (
+                            <div key={i} className={`compile-error-item ${e.warn ? 'warning' : 'error'}`}
+                              onClick={() => { if (e.file) openFileInTab(e.file); }}
+                              style={{ cursor: e.file ? 'pointer' : 'default' }}>
+                              <span className="error-badge">{e.warn ? '⚠' : '✕'}</span>
+                              <span className="error-msg">{e.msg}</span>
+                              {e.file && <span className="error-loc">{e.file}{e.line ? `:${e.line}` : ''}</span>}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                      <pre className="compile-raw-log">{log || 'No output'}</pre>
+                    </div>
+                  );
+                })()}
+              </div>
+            )}
           </section>
 
           <div className="pane-resizer" onMouseDown={handlePaneResizerMouseDown} />
@@ -1287,6 +1835,33 @@ function AppWorkspace({ auth, onLogout }) {
           </aside>
         </div>
       </main>
+
+      {/* Keyboard Shortcuts Overlay */}
+      {showShortcuts && (
+        <div className="shortcuts-overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowShortcuts(false); }}>
+          <div className="shortcuts-panel">
+            <div className="shortcuts-header">
+              <h3>⌨️ Keyboard Shortcuts</h3>
+              <button className="shortcuts-close" onClick={() => setShowShortcuts(false)}>✕</button>
+            </div>
+            <div className="shortcuts-body">
+              {SHORTCUTS.map(cat => (
+                <div key={cat.category} className="shortcuts-category">
+                  <h4>{cat.category}</h4>
+                  <div className="shortcuts-list">
+                    {cat.shortcuts.map((s, i) => (
+                      <div key={i} className="shortcut-row">
+                        <kbd>{isMac ? s.mac : s.keys}</kbd>
+                        <span>{s.desc}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Git Panel Overlay */}
       {showGitPanel && isGitRepo && (
