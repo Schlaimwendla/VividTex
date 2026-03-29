@@ -4,33 +4,16 @@ A modern, real-time collaborative LaTeX editor. Write, compile, and sync your ac
 > **Note**: This project was developed with AI assistance (GitHub Copilot / Claude).
 
 ## Features
-- **Real-Time Collaboration**: Work on `.tex` files together, just like Google Docs.
-- **Single-Port Deployment**: API + collaborative WebSocket run on `:3001` (`/ws`) for simpler school/firewall setups.
-- **LaTeX Syntax Highlighting**: Full dark-theme syntax highlighting for `.tex`, `.sty`, `.cls`, and `.bib` files.
-- **Smart Autocompletion**: Inline completions for LaTeX commands, environments, math symbols, and packages — triggered as you type.
-- **Error Linting & Hover Tooltips**: Real-time LaTeX error markers in the gutter with hover-to-see diagnostics, plus hover tooltips for commands and environments.
-- **Overleaf-Style Keyboard Shortcuts**: Bold (`Ctrl+B`), italic (`Ctrl+I`), toggle comment (`Ctrl+/`), delete line (`Ctrl+D`), move/copy lines (`Alt+↑↓`), find & replace (`Ctrl+F/H`), and more.
-- **Keyboard Shortcuts Help**: Click ⌨️ in the header to see all available shortcuts at a glance.
-- **Bi-directional SyncTeX**: Click in the PDF to jump to the code, or jump from the code to the PDF.
-- **Built-in Compiler**: Live PDF generation with `latexmk` (no shell escape).
-- **Enhanced Compile Feedback**: Compile status highlight, toast messages, and parsed LaTeX error/warning panel with file hints.
-- **Git Integration**: Clone repos, create branches, commit, pull & push — all from the browser.
-- **Per-Student Git Credentials**: Each student stores their own PAT in the browser; credentials are never shared.
-- **Branch Visualization**: Color-coded `git log --graph` tree in the History tab.
-- **Multi-Project Support**: Manage multiple LaTeX projects from a single instance.
-- **Group-Based Access Control**: Per-group access keys with project-level permissions.
-- **Optional LDAP School Login**: Sign in with school credentials (e.g., AD/LDAP), with optional group-based restrictions and admin mapping.
-- **Tabbed Multi-File Editing**: Open multiple files in tabs and switch quickly without losing context.
-- **Project Search**: Search text across project files directly from the sidebar.
-- **Soft Delete Trash**: Deleted files/folders move to project trash and can be restored.
-- **Zip Import/Export**: Upload or download projects as ZIP archives.
-- **Drag & Drop**: Upload files and folders, move items between directories.
-- **Code Folding**: Collapse and expand sections, environments, and blocks.
-- **Bracket Matching**: Matching brackets and braces are highlighted as you navigate.
-- **Auto-Close Tags**: `\begin{env}` automatically inserts the matching `\end{env}`.
-- **Search & Replace**: Full find/replace panel with regex support (`Ctrl+F` / `Ctrl+H`).
-- **Modern UX Polish**: Theme toggle, word count, browser spellcheck, and non-blocking toast notifications.
-- **Secure Self-Hosting**: Rate limiting, LaTeX sandboxing, directory-traversal protection, security headers.
+- **Real-time collaboration**: Edit `.tex` files together with live cursor presence.
+- **Single-port deployment**: API + collaborative WebSocket run on `:3001` (`/ws`).
+- **Focused LaTeX editor**: Syntax highlighting, autocomplete, folding, bracket matching, and Overleaf-style shortcuts.
+- **Bi-directional SyncTeX**: Jump code → PDF and PDF → code.
+- **Built-in compile pipeline**: `latexmk` with safe `--no-shell-escape` defaults.
+- **Git workflow in browser**: Clone, branch, commit, pull, push, and visualize history graph.
+- **Per-student Git credentials**: Browser-local PAT storage for classroom use.
+- **Project management**: Multi-project support, tabs, search, trash restore, ZIP import/export, and drag/drop.
+- **Access control**: Admin/group keys with optional LDAP login.
+- **Security baseline**: Rate limiting, path traversal protection, and hardened headers.
 
 ## Quick Start (Manual)
 

@@ -5,11 +5,10 @@ import { EditorState, StateField, StateEffect } from '@codemirror/state';
 import { EditorView, lineNumbers, keymap, drawSelection, dropCursor, Decoration, highlightSpecialChars, rectangularSelection, crosshairCursor, highlightActiveLine, highlightActiveLineGutter } from '@codemirror/view';
 import { history, historyKeymap, defaultKeymap, indentWithTab, undo, redo, toggleComment, indentMore, indentLess, selectAll, cursorLineBoundaryBackward, selectLineBoundaryForward, deleteLine, cursorMatchingBracket, cursorGroupLeft, cursorGroupRight, selectGroupLeft, selectGroupRight, deleteGroupBackward, deleteGroupForward, moveLineUp, moveLineDown, copyLineUp, copyLineDown } from '@codemirror/commands';
 import { autocompletion, completionKeymap, acceptCompletion } from '@codemirror/autocomplete';
-import { linter, lintGutter, lintKeymap } from '@codemirror/lint';
 import { searchKeymap, highlightSelectionMatches, openSearchPanel, closeSearchPanel } from '@codemirror/search';
 import { syntaxHighlighting, indentOnInput, bracketMatching, foldGutter, foldKeymap, defaultHighlightStyle, HighlightStyle } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
-import { latex as latexLang, latexLinter } from 'codemirror-lang-latex';
+import { latex as latexLang } from 'codemirror-lang-latex';
 import { yCollab } from 'y-codemirror.next';
 import axios from 'axios';
 import './App.css';
@@ -1505,9 +1504,7 @@ function AppWorkspace({ auth, onLogout }) {
           // Syntax highlighting
           ...(isTexFile ? [
             latexLang({ autoCloseTags: true, enableLinting: false, enableTooltips: true, enableAutocomplete: true }),
-            linter(latexLinter({ checkMissingDocumentEnv: false })),
             syntaxHighlighting(darkLatexHighlight),
-            lintGutter(),
           ] : [
             syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
           ]),
@@ -1570,7 +1567,6 @@ function AppWorkspace({ auth, onLogout }) {
             ...completionKeymap,
             ...searchKeymap,
             ...foldKeymap,
-            ...lintKeymap,
           ]),
           // Word count & auto-compile listeners
           EditorView.updateListener.of(update => {
@@ -1584,8 +1580,8 @@ function AppWorkspace({ auth, onLogout }) {
               }
             }
           }),
-          // Spellcheck
-          EditorView.contentAttributes.of({ spellcheck: "true" }),
+          // Disable browser language spell checking for TeX editing
+          EditorView.contentAttributes.of({ spellcheck: "false" }),
           yCollab(ytext, hpProvider.awareness, { undoManager: new Y.UndoManager(ytext) })
         ],
       });
