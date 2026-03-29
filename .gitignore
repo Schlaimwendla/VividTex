@@ -1,7 +1,16 @@
+# Dependencies
 frontend/node_modules/
 backend/node_modules/
-dist/
+frontend/dist/
+backend/dist/
+
+# Logs
+*.log
+backend/nohup.out
+
+# Environment
 .env
+.env.local
 
 # Workspace / user projects
 workspace/
