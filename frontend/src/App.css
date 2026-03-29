@@ -1388,3 +1388,191 @@ body.resizing-pane iframe {
   margin: 8px;
   background: rgba(139, 92, 246, 0.05);
 }
+
+/* ─── Keyboard Shortcuts Overlay ─── */
+.shortcuts-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 2000;
+}
+
+.shortcuts-panel {
+  background: var(--surface);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 16px;
+  width: 600px;
+  max-width: 90vw;
+  max-height: 80vh;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+}
+
+.shortcuts-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.shortcuts-header h3 {
+  margin: 0;
+  font-size: 1rem;
+  color: var(--text);
+}
+
+.shortcuts-close {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 1.2rem;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: all 0.15s;
+}
+
+.shortcuts-close:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--text);
+}
+
+.shortcuts-body {
+  padding: 16px 20px;
+  overflow-y: auto;
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+}
+
+.shortcuts-category h4 {
+  margin: 0 0 8px;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--accent);
+}
+
+.shortcuts-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.shortcut-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 0;
+  gap: 12px;
+}
+
+.shortcut-row kbd {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 5px;
+  padding: 2px 8px;
+  font-size: 0.75rem;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  color: var(--text);
+  white-space: nowrap;
+  min-width: fit-content;
+}
+
+.shortcut-row span {
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  text-align: right;
+  flex: 1;
+}
+
+/* ─── Autocomplete & Tooltip styling ─── */
+.cm-tooltip-autocomplete {
+  background-color: #1e1e2e !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 8px !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5) !important;
+  overflow: hidden;
+}
+
+.cm-tooltip-autocomplete ul {
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  font-size: 0.85rem !important;
+}
+
+.cm-tooltip-autocomplete ul li {
+  padding: 4px 10px !important;
+  color: #f4f4f5;
+}
+
+.cm-tooltip-autocomplete ul li[aria-selected] {
+  background-color: rgba(139, 92, 246, 0.3) !important;
+}
+
+.cm-completionIcon {
+  color: var(--accent) !important;
+  opacity: 0.7;
+}
+
+/* ─── Fold gutter ─── */
+.cm-foldGutter .cm-gutterElement {
+  color: #71717a;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.cm-foldGutter .cm-gutterElement:hover {
+  color: var(--accent);
+}
+
+/* ─── Search panel dark theme ─── */
+.cm-panel.cm-search {
+  background: #1e1e2e !important;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08) !important;
+  color: #f4f4f5 !important;
+  padding: 8px 12px !important;
+}
+
+.cm-panel.cm-search input,
+.cm-panel.cm-search button {
+  background: rgba(255, 255, 255, 0.06) !important;
+  color: #f4f4f5 !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 4px !important;
+  padding: 3px 8px !important;
+}
+
+.cm-panel.cm-search button:hover {
+  background: rgba(139, 92, 246, 0.3) !important;
+}
+
+.cm-panel.cm-search label {
+  color: #a1a1aa !important;
+}
+
+.cm-searchMatch {
+  background-color: rgba(255, 170, 0, 0.25) !important;
+  outline: 1px solid rgba(255, 170, 0, 0.5);
+}
+
+.cm-searchMatch-selected {
+  background-color: rgba(139, 92, 246, 0.4) !important;
+}
+
+/* ─── Hover tooltip ─── */
+.cm-tooltip-hover {
+  background-color: #1e1e2e !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+  border-radius: 8px !important;
+  padding: 8px 12px !important;
+  color: #f4f4f5 !important;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5) !important;
+  font-size: 0.85rem !important;
+  max-width: 400px;
+}

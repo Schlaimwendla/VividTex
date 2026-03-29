@@ -2,8 +2,14 @@ import { useEffect, useRef, useState, useCallback } from 'react';
 import * as Y from 'yjs';
 import { HocuspocusProvider } from '@hocuspocus/provider';
 import { EditorState, StateField, StateEffect } from '@codemirror/state';
-import { EditorView, lineNumbers, keymap, drawSelection, dropCursor, Decoration } from '@codemirror/view';
-import { history, historyKeymap, defaultKeymap } from '@codemirror/commands';
+import { EditorView, lineNumbers, keymap, drawSelection, dropCursor, Decoration, highlightSpecialChars, rectangularSelection, crosshairCursor, highlightActiveLine, highlightActiveLineGutter } from '@codemirror/view';
+import { history, historyKeymap, defaultKeymap, indentWithTab, undo, redo, toggleComment, indentMore, indentLess, selectAll, cursorLineBoundaryBackward, selectLineBoundaryForward, deleteLine, cursorMatchingBracket, cursorGroupLeft, cursorGroupRight, selectGroupLeft, selectGroupRight, deleteGroupBackward, deleteGroupForward, moveLineUp, moveLineDown, copyLineUp, copyLineDown } from '@codemirror/commands';
+import { autocompletion, completionKeymap, acceptCompletion } from '@codemirror/autocomplete';
+import { linter, lintGutter, lintKeymap } from '@codemirror/lint';
+import { searchKeymap, highlightSelectionMatches, openSearchPanel, closeSearchPanel } from '@codemirror/search';
+import { syntaxHighlighting, indentOnInput, bracketMatching, foldGutter, foldKeymap, defaultHighlightStyle, HighlightStyle } from '@codemirror/language';
+import { tags } from '@lezer/highlight';
+import { latex as latexLang, latexLinter } from 'codemirror-lang-latex';
 import { yCollab } from 'y-codemirror.next';
 import axios from 'axios';
 import './App.css';
@@ -73,6 +79,89 @@ const highlightField = StateField.define({
   },
   provide: f => EditorView.decorations.from(f)
 });
+
+// ─── Dark theme syntax highlighting for LaTeX ───
+const darkLatexHighlight = HighlightStyle.define([
+  { tag: tags.keyword, color: '#c678dd' },
+  { tag: tags.name, color: '#e06c75' },
+  { tag: tags.typeName, color: '#e5c07b' },
+  { tag: tags.string, color: '#98c379' },
+  { tag: tags.number, color: '#d19a66' },
+  { tag: tags.bool, color: '#d19a66' },
+  { tag: tags.comment, color: '#5c6370', fontStyle: 'italic' },
+  { tag: tags.lineComment, color: '#5c6370', fontStyle: 'italic' },
+  { tag: tags.blockComment, color: '#5c6370', fontStyle: 'italic' },
+  { tag: tags.bracket, color: '#abb2bf' },
+  { tag: tags.paren, color: '#abb2bf' },
+  { tag: tags.squareBracket, color: '#abb2bf' },
+  { tag: tags.brace, color: '#e5c07b' },
+  { tag: tags.meta, color: '#61afef' },
+  { tag: tags.operator, color: '#56b6c2' },
+  { tag: tags.heading, color: '#e06c75', fontWeight: 'bold' },
+  { tag: tags.heading1, color: '#e06c75', fontWeight: 'bold', fontSize: '1.1em' },
+  { tag: tags.heading2, color: '#e06c75', fontWeight: 'bold' },
+  { tag: tags.emphasis, fontStyle: 'italic', color: '#c678dd' },
+  { tag: tags.strong, fontWeight: 'bold', color: '#e5c07b' },
+  { tag: tags.labelName, color: '#61afef' },
+  { tag: tags.definition(tags.name), color: '#e06c75' },
+  { tag: tags.processingInstruction, color: '#c678dd' },
+  { tag: tags.special(tags.string), color: '#56b6c2' },
+  { tag: tags.atom, color: '#d19a66' },
+  { tag: tags.contentSeparator, color: '#5c6370' },
+]);
+
+// ─── Keyboard shortcuts reference (Overleaf-compatible) ───
+const SHORTCUTS = [
+  { category: 'Editing', shortcuts: [
+    { keys: 'Ctrl+Z', mac: 'Cmd+Z', desc: 'Undo' },
+    { keys: 'Ctrl+Shift+Z', mac: 'Cmd+Shift+Z', desc: 'Redo' },
+    { keys: 'Ctrl+/', mac: 'Cmd+/', desc: 'Toggle comment' },
+    { keys: 'Tab', mac: 'Tab', desc: 'Indent more' },
+    { keys: 'Shift+Tab', mac: 'Shift+Tab', desc: 'Indent less' },
+    { keys: 'Ctrl+D', mac: 'Cmd+D', desc: 'Delete line' },
+    { keys: 'Ctrl+Shift+K', mac: 'Cmd+Shift+K', desc: 'Delete line' },
+    { keys: 'Alt+Up', mac: 'Alt+Up', desc: 'Move line up' },
+    { keys: 'Alt+Down', mac: 'Alt+Down', desc: 'Move line down' },
+    { keys: 'Shift+Alt+Up', mac: 'Shift+Alt+Up', desc: 'Copy line up' },
+    { keys: 'Shift+Alt+Down', mac: 'Shift+Alt+Down', desc: 'Copy line down' },
+    { keys: 'Ctrl+B', mac: 'Cmd+B', desc: 'Bold (\\textbf{})' },
+    { keys: 'Ctrl+I', mac: 'Cmd+I', desc: 'Italic (\\textit{})' },
+  ]},
+  { category: 'Navigation', shortcuts: [
+    { keys: 'Ctrl+F', mac: 'Cmd+F', desc: 'Find' },
+    { keys: 'Ctrl+H', mac: 'Cmd+H', desc: 'Find & Replace' },
+    { keys: 'Ctrl+G', mac: 'Cmd+G', desc: 'Find next' },
+    { keys: 'Ctrl+Shift+G', mac: 'Cmd+Shift+G', desc: 'Find previous' },
+    { keys: 'Ctrl+Home', mac: 'Cmd+Up', desc: 'Go to start' },
+    { keys: 'Ctrl+End', mac: 'Cmd+Down', desc: 'Go to end' },
+  ]},
+  { category: 'Selection', shortcuts: [
+    { keys: 'Ctrl+A', mac: 'Cmd+A', desc: 'Select all' },
+    { keys: 'Ctrl+Shift+Left', mac: 'Alt+Shift+Left', desc: 'Select word left' },
+    { keys: 'Ctrl+Shift+Right', mac: 'Alt+Shift+Right', desc: 'Select word right' },
+    { keys: 'Shift+Home', mac: 'Cmd+Shift+Left', desc: 'Select to line start' },
+    { keys: 'Shift+End', mac: 'Cmd+Shift+Right', desc: 'Select to line end' },
+  ]},
+  { category: 'Compile & View', shortcuts: [
+    { keys: 'Ctrl+S', mac: 'Cmd+S', desc: 'Compile (save)' },
+    { keys: 'Ctrl+Enter', mac: 'Cmd+Enter', desc: 'Compile' },
+    { keys: 'Ctrl+J', mac: 'Cmd+J', desc: 'SyncTeX forward search' },
+    { keys: 'Ctrl+Shift+F', mac: 'Cmd+Shift+F', desc: 'Toggle search panel' },
+  ]},
+];
+
+const isMac = typeof navigator !== 'undefined' && /Mac/.test(navigator.platform);
+
+// Helper: wrap selection with LaTeX command
+function wrapSelection(view, before, after) {
+  const { from, to } = view.state.selection.main;
+  const selected = view.state.sliceDoc(from, to);
+  view.dispatch({
+    changes: { from, to, insert: before + selected + after },
+    selection: { anchor: from + before.length, head: from + before.length + selected.length }
+  });
+  return true;
+}
 
 const HOST = window.location.hostname;
 const API_URL = `http://${HOST}:3001`;
@@ -614,7 +703,7 @@ function AppWorkspace({ auth, onLogout }) {
   const [gitGraphLines, setGitGraphLines] = useState([]);
   const [gitPanelTab, setGitPanelTab] = useState('commit'); // 'commit', 'branches', 'log'
   const [newBranchName, setNewBranchName] = useState('');
-
+  const [showShortcuts, setShowShortcuts] = useState(false);
   const editorContainerRef = useRef(null);
   const editorViewRef = useRef(null);
   const providerRef = useRef(null);
@@ -1132,18 +1221,61 @@ function AppWorkspace({ auth, onLogout }) {
         color: myColor,
       });
 
+      const isTexFile = /\.(tex|sty|cls|bib|dtx|ins|ltx)$/i.test(activeFile);
+
       const state = EditorState.create({
         doc: ytext.toString(),
         extensions: [
           lineNumbers(),
+          highlightActiveLineGutter(),
+          highlightSpecialChars(),
           history(),
+          foldGutter(),
           drawSelection(),
           dropCursor(),
           EditorView.lineWrapping,
+          indentOnInput(),
+          bracketMatching(),
+          rectangularSelection(),
+          crosshairCursor(),
+          highlightActiveLine(),
+          highlightSelectionMatches(),
           highlightField,
+          // Syntax highlighting
+          ...(isTexFile ? [
+            latexLang({ autoCloseTags: true, enableLinting: false, enableTooltips: true, enableAutocomplete: true }),
+            linter(latexLinter({ checkMissingDocumentEnv: false })),
+            syntaxHighlighting(darkLatexHighlight),
+            lintGutter(),
+          ] : [
+            syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+          ]),
+          // Autocomplete
+          autocompletion({ defaultKeymap: true, activateOnTyping: true }),
+          // Dark editor theme
+          EditorView.theme({
+            '&': { backgroundColor: 'transparent' },
+            '.cm-content': { caretColor: '#fff' },
+            '.cm-matchingBracket': { backgroundColor: 'rgba(139, 92, 246, 0.4)', outline: '1px solid rgba(139, 92, 246, 0.6)' },
+            '.cm-tooltip-autocomplete': {
+              backgroundColor: '#1e1e2e !important',
+              border: '1px solid rgba(255,255,255,0.1) !important',
+              borderRadius: '8px !important',
+            },
+            '.cm-tooltip-autocomplete ul li[aria-selected]': {
+              backgroundColor: 'rgba(139, 92, 246, 0.3) !important',
+            },
+            '.cm-completionLabel': { color: '#f4f4f5' },
+            '.cm-completionDetail': { color: '#71717a', fontStyle: 'italic' },
+            '.cm-foldGutter span': { color: '#71717a', fontSize: '1em', padding: '0 2px' },
+            '.cm-foldPlaceholder': { backgroundColor: 'rgba(139, 92, 246, 0.2)', border: '1px solid rgba(139, 92, 246, 0.4)', color: '#8b5cf6', borderRadius: '3px', padding: '0 4px' },
+          }, { dark: true }),
+          // Keymaps — Overleaf-compatible
           keymap.of([
-            ...defaultKeymap,
-            ...historyKeymap,
+            // Prevent defaults we override
+            { key: 'Ctrl-s', run: () => { handleCompileRef.current && handleCompileRef.current(); return true; }, preventDefault: true },
+            { key: 'Ctrl-Enter', run: () => { handleCompileRef.current && handleCompileRef.current(); return true; }, preventDefault: true },
+            // SyncTeX
             { key: 'Ctrl-j', run: (cmView) => {
               const pos = cmView.state.selection.main.head;
               const lineObj = cmView.state.doc.lineAt(pos);
@@ -1155,10 +1287,29 @@ function AppWorkspace({ auth, onLogout }) {
               });
               return true;
             }},
-            { key: 'Ctrl-s', run: () => {
-              handleCompileRef.current && handleCompileRef.current();
-              return true;
-            }, preventDefault: true }
+            // Bold / Italic wrapping
+            { key: 'Ctrl-b', run: (v) => wrapSelection(v, '\\textbf{', '}'), preventDefault: true },
+            { key: 'Ctrl-i', run: (v) => wrapSelection(v, '\\textit{', '}'), preventDefault: true },
+            // Indent with tab
+            indentWithTab,
+            // Comment toggle
+            { key: 'Ctrl-/', run: toggleComment },
+            // Delete line (Overleaf uses Ctrl+D and Ctrl+Shift+K)
+            { key: 'Ctrl-d', run: deleteLine, preventDefault: true },
+            { key: 'Ctrl-Shift-k', run: deleteLine },
+            // Move lines
+            { key: 'Alt-ArrowUp', run: moveLineUp },
+            { key: 'Alt-ArrowDown', run: moveLineDown },
+            // Copy lines
+            { key: 'Shift-Alt-ArrowUp', run: copyLineUp },
+            { key: 'Shift-Alt-ArrowDown', run: copyLineDown },
+            // Standard keymaps
+            ...defaultKeymap,
+            ...historyKeymap,
+            ...completionKeymap,
+            ...searchKeymap,
+            ...foldKeymap,
+            ...lintKeymap,
           ]),
           yCollab(ytext, hpProvider.awareness, { undoManager: new Y.UndoManager(ytext) })
         ],
@@ -1226,6 +1377,7 @@ function AppWorkspace({ auth, onLogout }) {
           </div>
         </div>
         <div className="header-actions">
+          <button className="btn-secondary btn-small" onClick={() => setShowShortcuts(true)} title="Keyboard shortcuts">⌨️</button>
           <button className="btn-secondary" onClick={handleExportZip} title="Download project as ZIP">📦 Export</button>
           <button className="btn-secondary" onClick={handleDownloadPdf} disabled={!pdfUrl}>⬇️ PDF</button>
           {isGitRepo && <button className="btn-secondary" onClick={() => openGitPanel('commit')} title="Git commit, pull, push">🔀 Git</button>}
@@ -1287,6 +1439,33 @@ function AppWorkspace({ auth, onLogout }) {
           </aside>
         </div>
       </main>
+
+      {/* Keyboard Shortcuts Overlay */}
+      {showShortcuts && (
+        <div className="shortcuts-overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowShortcuts(false); }}>
+          <div className="shortcuts-panel">
+            <div className="shortcuts-header">
+              <h3>⌨️ Keyboard Shortcuts</h3>
+              <button className="shortcuts-close" onClick={() => setShowShortcuts(false)}>✕</button>
+            </div>
+            <div className="shortcuts-body">
+              {SHORTCUTS.map(cat => (
+                <div key={cat.category} className="shortcuts-category">
+                  <h4>{cat.category}</h4>
+                  <div className="shortcuts-list">
+                    {cat.shortcuts.map((s, i) => (
+                      <div key={i} className="shortcut-row">
+                        <kbd>{isMac ? s.mac : s.keys}</kbd>
+                        <span>{s.desc}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Git Panel Overlay */}
       {showGitPanel && isGitRepo && (
