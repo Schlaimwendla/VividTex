@@ -3,8 +3,7 @@ services:
     build: .
     container_name: vividtex
     ports:
-      - "3001:3001" # Backend API
-      - "1234:1234" # WebSocket
+      - "3001:3001" # API + WebSocket
     env_file:
       - .env
     environment:

@@ -7,7 +7,7 @@ const simpleGit = require('simple-git');
 const fs = require('fs');
 const path = require('path');
 require('dotenv').config({ path: path.resolve(__dirname, '../.env') });
-const { Server } = require('@hocuspocus/server');
+const { Hocuspocus } = require('@hocuspocus/server');
 const multer = require('multer');
 const archiver = require('archiver');
 const winston = require('winston');
@@ -167,8 +167,160 @@ const authenticateKey = (key) => {
 const hasProjectAccess = (auth, projectName) => {
     if (!auth) return false;
     if (auth.role === 'admin') return true;
+    if (auth.role === 'ldap') return true; // LDAP users have access to all projects
     return (auth.projects || []).includes(projectName);
 };
+
+// ─── LDAP AUTHENTICATION ─────────────────────────────────
+
+const LDAP_URL = process.env.VIVIDTEX_LDAP_URL || '';
+const LDAP_BASE_DN = process.env.VIVIDTEX_LDAP_BASE_DN || '';
+const LDAP_USER_FILTER = process.env.VIVIDTEX_LDAP_USER_FILTER || '(sAMAccountName={{username}})';
+const LDAP_BIND_DN = process.env.VIVIDTEX_LDAP_BIND_DN || '';
+const LDAP_BIND_PASSWORD = process.env.VIVIDTEX_LDAP_BIND_PASSWORD || '';
+const LDAP_GROUP = process.env.VIVIDTEX_LDAP_GROUP || ''; // optional: restrict to group members
+const LDAP_ADMIN_GROUP = process.env.VIVIDTEX_LDAP_ADMIN_GROUP || ''; // optional: LDAP group for admin role
+
+const ldapEnabled = !!(LDAP_URL && LDAP_BASE_DN);
+
+const authenticateLdap = (username, password) => {
+    return new Promise((resolve, reject) => {
+        if (!ldapEnabled) return reject(new Error('LDAP not configured'));
+        if (!username || !password) return reject(new Error('Username and password required'));
+
+        const ldap = require('ldapjs');
+        const client = ldap.createClient({ url: LDAP_URL, tlsOptions: { rejectUnauthorized: false } });
+
+        const bindDn = LDAP_BIND_DN || `${username}@${LDAP_BASE_DN.replace(/,?dc=/gi, '.').replace(/^\./, '')}`;
+        const bindPwd = LDAP_BIND_DN ? LDAP_BIND_PASSWORD : password;
+
+        // Step 1: Bind with service account (or user directly if no bind DN)
+        client.bind(bindDn, bindPwd, (err) => {
+            if (err) {
+                client.destroy();
+                return reject(new Error('LDAP bind failed'));
+            }
+
+            const filter = LDAP_USER_FILTER.replace('{{username}}', username.replace(/[()\\*]/g, ''));
+            const opts = {
+                filter,
+                scope: 'sub',
+                attributes: ['dn', 'cn', 'sAMAccountName', 'mail', 'memberOf', 'displayName'],
+                sizeLimit: 1,
+            };
+
+            // Step 2: Search for the user
+            client.search(LDAP_BASE_DN, opts, (err, searchRes) => {
+                if (err) {
+                    client.destroy();
+                    return reject(new Error('LDAP search failed'));
+                }
+
+                let userEntry = null;
+                searchRes.on('searchEntry', (entry) => {
+                    userEntry = entry;
+                });
+
+                searchRes.on('error', (err) => {
+                    client.destroy();
+                    reject(new Error('LDAP search error'));
+                });
+
+                searchRes.on('end', () => {
+                    if (!userEntry) {
+                        client.destroy();
+                        return reject(new Error('User not found'));
+                    }
+
+                    const userDn = userEntry.dn?.toString() || userEntry.objectName?.toString();
+                    const attrs = {};
+                    if (userEntry.ppiAttributes) {
+                        for (const attr of userEntry.ppiAttributes) {
+                            attrs[attr.type] = attr.values?.length === 1 ? attr.values[0] : attr.values;
+                        }
+                    } else if (userEntry.attributes) {
+                        for (const attr of userEntry.attributes) {
+                            attrs[attr.type] = attr.values?.length === 1 ? attr.values[0] : attr.values;
+                        }
+                    }
+
+                    // Step 3: Rebind as the user to verify password (if we used a service account)
+                    const verifyBind = LDAP_BIND_DN ? (cb) => {
+                        const userClient = ldap.createClient({ url: LDAP_URL, tlsOptions: { rejectUnauthorized: false } });
+                        userClient.bind(userDn, password, (err) => {
+                            userClient.destroy();
+                            cb(err);
+                        });
+                    } : (cb) => cb(null); // Already bound as user
+
+                    verifyBind((err) => {
+                        client.destroy();
+                        if (err) return reject(new Error('Invalid password'));
+
+                        const memberOf = Array.isArray(attrs.memberOf) ? attrs.memberOf : (attrs.memberOf ? [attrs.memberOf] : []);
+                        const displayName = attrs.displayName || attrs.cn || username;
+
+                        // Check group membership if required
+                        if (LDAP_GROUP) {
+                            const isMember = memberOf.some(g => g.toLowerCase().includes(LDAP_GROUP.toLowerCase()));
+                            if (!isMember) return reject(new Error('Not a member of required group'));
+                        }
+
+                        // Check if user is an admin
+                        let role = 'ldap';
+                        if (LDAP_ADMIN_GROUP) {
+                            const isAdmin = memberOf.some(g => g.toLowerCase().includes(LDAP_ADMIN_GROUP.toLowerCase()));
+                            if (isAdmin) role = 'admin';
+                        }
+
+                        resolve({ role, username, displayName, memberOf });
+                    });
+                });
+            });
+        });
+    });
+};
+
+// ─── LDAP SESSION STORE ──────────────────────────────────
+
+const ldapSessions = new Map(); // token -> { role, username, displayName, expiresAt }
+const LDAP_SESSION_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
+const createLdapSession = (ldapAuth) => {
+    const token = `ldap_${generateKey()}`;
+    ldapSessions.set(token, {
+        role: ldapAuth.role,
+        username: ldapAuth.username,
+        displayName: ldapAuth.displayName,
+        expiresAt: Date.now() + LDAP_SESSION_TTL,
+    });
+    return token;
+};
+
+const authenticateToken = (token) => {
+    // Try key-based auth first
+    const keyAuth = authenticateKey(token);
+    if (keyAuth) return keyAuth;
+
+    // Try LDAP session
+    const session = ldapSessions.get(token);
+    if (session) {
+        if (Date.now() > session.expiresAt) {
+            ldapSessions.delete(token);
+            return null;
+        }
+        return { role: session.role === 'admin' ? 'admin' : 'ldap', username: session.username, displayName: session.displayName };
+    }
+    return null;
+};
+
+// Clean expired LDAP sessions every 15 minutes
+setInterval(() => {
+    const now = Date.now();
+    for (const [token, session] of ldapSessions) {
+        if (now > session.expiresAt) ldapSessions.delete(token);
+    }
+}, 900000);
 
 // ─── RATE LIMITING ───────────────────────────────────────
 
@@ -218,12 +370,12 @@ app.use((req, res, next) => {
     }
 
     // Login endpoint is public (has its own rate limit)
-    if (req.path === '/api/auth/login') return next();
+    if (req.path === '/api/auth/login' || req.path === '/api/auth/config') return next();
 
-    if (!ADMIN_KEY) return next(); // No auth configured — open access
+    if (!ADMIN_KEY && !ldapEnabled) return next(); // No auth configured — open access
 
     const token = getToken(req);
-    const auth = authenticateKey(token);
+    const auth = authenticateToken(token);
     if (!auth) return res.status(401).json({ error: 'Unauthorized' });
 
     req.auth = auth;
@@ -249,12 +401,10 @@ const requireAdmin = (req, res, next) => {
 
 // ─── HOCUSPOCUS (Real-time WebSocket collaboration) ──────
 
-const hocuspocusServer = new Server({
+const hocuspocusServer = new Hocuspocus({
     name: 'latex-collab',
-    port: 1234,
-    address: '0.0.0.0',
     async onAuthenticate({ token, documentName }) {
-        const auth = authenticateKey(token);
+        const auth = authenticateToken(token);
         if (!auth) throw new Error('Unauthorized');
 
         // Document names are: latex::{project}::{file}
@@ -267,15 +417,35 @@ const hocuspocusServer = new Server({
         }
     }
 });
-hocuspocusServer.listen();
 
 // ─── AUTH & ADMIN ENDPOINTS ──────────────────────────────
 
-// Login: validate key, return role info
-app.post('/api/auth/login', rateLimit(10, 60000), (req, res) => {
-    const { key } = req.body;
+// Login: validate key or LDAP credentials, return role info
+app.post('/api/auth/login', rateLimit(10, 60000), async (req, res) => {
+    const { key, username, password } = req.body;
+
+    // LDAP login: username + password
+    if (ldapEnabled && username && password) {
+        try {
+            const ldapAuth = await authenticateLdap(username, password);
+            const token = createLdapSession(ldapAuth);
+            return res.json({
+                role: ldapAuth.role,
+                group: null,
+                projects: null,
+                token,
+                username: ldapAuth.displayName || ldapAuth.username,
+                ldap: true,
+            });
+        } catch (e) {
+            logger.warn(`LDAP login failed for ${username}: ${e.message}`);
+            return res.status(401).json({ error: e.message || 'Invalid credentials' });
+        }
+    }
+
+    // Key-based login
     if (!key || typeof key !== 'string') {
-        return res.status(400).json({ error: 'Access key is required' });
+        return res.status(400).json({ error: ldapEnabled ? 'Credentials required' : 'Access key is required' });
     }
     const auth = authenticateKey(key);
     if (!auth) {
@@ -285,6 +455,11 @@ app.post('/api/auth/login', rateLimit(10, 60000), (req, res) => {
         return res.json({ role: 'admin', group: null, projects: null });
     }
     return res.json({ role: auth.role, group: auth.group, projects: auth.projects });
+});
+
+// Check if LDAP is enabled (public endpoint for frontend)
+app.get('/api/auth/config', (req, res) => {
+    res.json({ ldap: ldapEnabled });
 });
 
 // List all groups (admin only)
@@ -661,6 +836,46 @@ app.get('/api/projects/:name/file', (req, res) => {
     }
 });
 
+// Search across project files
+app.get('/api/projects/:name/search', (req, res) => {
+    const { name } = req.params;
+    const query = req.query.q;
+    if (!isValidProjectName(name)) return res.status(400).json({ error: 'Invalid project name' });
+    if (!query || typeof query !== 'string' || query.length > 200) return res.status(400).json({ error: 'Invalid query' });
+    try {
+        const projectDir = getProjectDir(name);
+        const results = [];
+        const searchDir = (dir, baseDir = '') => {
+            const entries = fs.readdirSync(dir);
+            for (const entry of entries) {
+                if (entry.startsWith('.')) continue;
+                const fullPath = path.join(dir, entry);
+                const relativePath = baseDir ? path.join(baseDir, entry) : entry;
+                const stat = fs.statSync(fullPath);
+                if (stat.isDirectory()) {
+                    searchDir(fullPath, relativePath);
+                } else if (/\.(tex|bib|cls|sty|txt|md)$/i.test(entry) && stat.size < 1048576) {
+                    try {
+                        const content = fs.readFileSync(fullPath, 'utf-8');
+                        const lines = content.split('\n');
+                        const lowerQuery = query.toLowerCase();
+                        for (let i = 0; i < lines.length; i++) {
+                            if (lines[i].toLowerCase().includes(lowerQuery)) {
+                                results.push({ file: relativePath, line: i + 1, text: lines[i].trim().substring(0, 200) });
+                                if (results.length >= 100) return;
+                            }
+                        }
+                    } catch { /* skip unreadable files */ }
+                }
+            }
+        };
+        searchDir(projectDir);
+        res.json(results);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
 // Write file
 app.post('/api/projects/:name/file', (req, res) => {
     const { name } = req.params;
@@ -679,7 +894,7 @@ app.post('/api/projects/:name/file', (req, res) => {
     }
 });
 
-// Delete file or directory
+// Delete file or directory (soft-delete: moves to .trash/)
 app.delete('/api/projects/:name/file', (req, res) => {
     const { name } = req.params;
     if (!isValidProjectName(name)) return res.status(400).send('Invalid project name');
@@ -688,15 +903,81 @@ app.delete('/api/projects/:name/file', (req, res) => {
         const filePath = safeJoin(projectDir, req.query.path);
         if (filePath === projectDir) return res.status(400).json({ error: 'Cannot delete project root' });
         if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found' });
-        const stat = fs.statSync(filePath);
-        if (stat.isDirectory()) {
-            fs.rmSync(filePath, { recursive: true, force: true });
-        } else {
-            fs.unlinkSync(filePath);
-        }
-        res.json({ success: true });
+
+        const trashDir = path.join(projectDir, '.trash');
+        if (!fs.existsSync(trashDir)) fs.mkdirSync(trashDir, { recursive: true });
+
+        const relativePath = path.relative(projectDir, filePath);
+        const timestamp = Date.now();
+        const trashName = `${timestamp}_${relativePath.replace(/[/\\]/g, '__')}`;
+        const trashPath = path.join(trashDir, trashName);
+
+        fs.renameSync(filePath, trashPath);
+        res.json({ success: true, trashed: true });
     } catch (e) {
         res.status(403).json({ error: e.message });
+    }
+});
+
+// List trash contents
+app.get('/api/projects/:name/trash', (req, res) => {
+    const { name } = req.params;
+    if (!isValidProjectName(name)) return res.status(400).send('Invalid project name');
+    try {
+        const trashDir = path.join(getProjectDir(name), '.trash');
+        if (!fs.existsSync(trashDir)) return res.json([]);
+        const items = fs.readdirSync(trashDir).map(entry => {
+            const match = entry.match(/^(\d+)_(.+)$/);
+            return {
+                trashName: entry,
+                originalPath: match ? match[2].replace(/__/g, '/') : entry,
+                deletedAt: match ? Number(match[1]) : 0,
+            };
+        }).sort((a, b) => b.deletedAt - a.deletedAt);
+        res.json(items);
+    } catch (e) {
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Restore item from trash
+app.post('/api/projects/:name/trash/restore', (req, res) => {
+    const { name } = req.params;
+    const { trashName } = req.body;
+    if (!isValidProjectName(name)) return res.status(400).send('Invalid project name');
+    if (!trashName || typeof trashName !== 'string') return res.status(400).json({ error: 'trashName required' });
+    try {
+        const projectDir = getProjectDir(name);
+        const trashDir = path.join(projectDir, '.trash');
+        const trashPath = safeJoin(trashDir, trashName);
+        if (!fs.existsSync(trashPath)) return res.status(404).json({ error: 'Item not found in trash' });
+
+        const match = trashName.match(/^(\d+)_(.+)$/);
+        const originalRelative = match ? match[2].replace(/__/g, '/') : trashName;
+        const restorePath = safeJoin(projectDir, originalRelative);
+        const restoreDir = path.dirname(restorePath);
+        if (!fs.existsSync(restoreDir)) fs.mkdirSync(restoreDir, { recursive: true });
+
+        if (fs.existsSync(restorePath)) {
+            return res.status(409).json({ error: 'A file already exists at the original path' });
+        }
+        fs.renameSync(trashPath, restorePath);
+        res.json({ success: true, restoredTo: originalRelative });
+    } catch (e) {
+        res.status(403).json({ error: e.message });
+    }
+});
+
+// Empty trash
+app.delete('/api/projects/:name/trash', (req, res) => {
+    const { name } = req.params;
+    if (!isValidProjectName(name)) return res.status(400).send('Invalid project name');
+    try {
+        const trashDir = path.join(getProjectDir(name), '.trash');
+        if (fs.existsSync(trashDir)) fs.rmSync(trashDir, { recursive: true, force: true });
+        res.json({ success: true });
+    } catch (e) {
+        res.status(500).json({ error: e.message });
     }
 });
 
@@ -1365,8 +1646,24 @@ app.use(express.static(path.join(__dirname, "../frontend/dist")));
 app.use((req, res) => res.sendFile(path.join(__dirname, "../frontend/dist/index.html")));
 
 const PORT = 3001;
-app.listen(PORT, '0.0.0.0', () => {
-    logger.info(`Backend API running on http://0.0.0.0:${PORT}`);
-    logger.info(`Hocuspocus WebSocket running on ws://0.0.0.0:1234`);
+const http = require('http');
+const WebSocket = require('ws');
+const httpServer = http.createServer(app);
+const wss = new WebSocket.WebSocketServer({ noServer: true });
+
+// Handle WebSocket upgrades for Hocuspocus on /ws path
+httpServer.on('upgrade', (request, socket, head) => {
+    const url = new URL(request.url, `http://${request.headers.host}`);
+    if (url.pathname === '/ws') {
+        wss.handleUpgrade(request, socket, head, (ws) => {
+            hocuspocusServer.handleConnection(ws, request);
+        });
+    } else {
+        socket.destroy();
+    }
+});
+
+httpServer.listen(PORT, '0.0.0.0', () => {
+    logger.info(`VividTex running on http://0.0.0.0:${PORT} (API + WebSocket)`);
     logger.info(`Workspace directory: ${WORKDIR}`);
 });

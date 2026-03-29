@@ -22,8 +22,8 @@ RUN npm run build
 WORKDIR /app/backend
 RUN npm install
 
-# Expose ports for the backend API and Hocuspocus WebSockets
-EXPOSE 3001 1234
+# Expose port for the backend API + WebSocket
+EXPOSE 3001
 
 # Create non-root user
 RUN addgroup -S vividtex && adduser -S vividtex -G vividtex
