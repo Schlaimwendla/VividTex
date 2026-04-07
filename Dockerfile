@@ -8,6 +8,9 @@ RUN apk add --no-cache \
     perl \
     unzip
 
+# Register all font maps (including Nunito) for pdflatex
+RUN updmap-sys
+
 WORKDIR /app
 
 # Copy the entire project

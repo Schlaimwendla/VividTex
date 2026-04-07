@@ -2,6 +2,7 @@ services:
   vividtex:
     build: .
     container_name: vividtex
+    restart: unless-stopped
     ports:
       - "3001:3001" # API + WebSocket
     env_file:

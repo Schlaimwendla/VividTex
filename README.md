@@ -45,6 +45,20 @@ docker compose up -d --build
 ```
 Your instance will be available at `http://localhost:3001`.
 
+### Auto-start On PC Boot
+
+To make VividTex start automatically after reboot:
+
+```bash
+# 1) Enable Docker daemon on boot (Linux systemd)
+sudo systemctl enable --now docker
+
+# 2) Start VividTex once in detached mode
+docker compose up -d --build
+```
+
+Because `docker-compose.yml` uses `restart: unless-stopped`, the container will come back up automatically whenever the machine restarts.
+
 ## Configuration (.env)
 
 | Variable | Required | Description |
