@@ -1827,7 +1827,7 @@ function AppWorkspace({ auth, onLogout }) {
           <div className="pane-resizer" onMouseDown={handlePaneResizerMouseDown} />
 
           <aside className="pdf-pane panel" style={{ flex: '1 1 0' }}>
-            {pdfUrl ? <iframe className="pdf-frame" src={pdfUrl} title="PDF Preview" /> : <div className="pdf-placeholder">Click Compile to preview PDF</div>}
+            {pdfUrl ? <iframe key={pdfUrl} className="pdf-frame" src={pdfUrl} title="PDF Preview" /> : <div className="pdf-placeholder">Click Compile to preview PDF</div>}
           </aside>
         </div>
       </main>

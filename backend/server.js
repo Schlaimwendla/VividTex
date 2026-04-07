@@ -401,6 +401,9 @@ const requireAdmin = (req, res, next) => {
 
 // ─── HOCUSPOCUS (Real-time WebSocket collaboration) ──────
 
+// Debounce timers for saving documents to disk
+const docSaveTimers = new Map();
+
 const hocuspocusServer = new Hocuspocus({
     name: 'latex-collab',
     async onAuthenticate({ token, documentName }) {
@@ -415,7 +418,39 @@ const hocuspocusServer = new Hocuspocus({
                 throw new Error('Access denied to this project');
             }
         }
-    }
+    },
+    async onChange({ documentName, document }) {
+        // Debounce saves: write to disk 2s after last change
+        if (docSaveTimers.has(documentName)) clearTimeout(docSaveTimers.get(documentName));
+        docSaveTimers.set(documentName, setTimeout(() => {
+            docSaveTimers.delete(documentName);
+            try {
+                const parts = (documentName || '').split('::');
+                if (parts.length < 3) return;
+                const projectName = parts[1];
+                const encodedFile = parts.slice(2).join('::');
+                const filePath = decodeURIComponent(encodedFile);
+                // Skip binary files — writing them as UTF-8 corrupts their content
+                const binaryExts = ['.png', '.jpg', '.jpeg', '.gif', '.bmp', '.svg', '.pdf', '.eps',
+                    '.zip', '.tar', '.gz', '.bz2', '.xz', '.7z',
+                    '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+                    '.ttf', '.otf', '.woff', '.woff2', '.eot',
+                    '.mp3', '.mp4', '.wav', '.avi', '.mov', '.webm',
+                    '.o', '.so', '.dll', '.exe', '.class', '.pyc'];
+                const ext = path.extname(filePath).toLowerCase();
+                if (binaryExts.includes(ext)) return;
+                if (!isValidProjectName(projectName)) return;
+                const projectDir = getProjectDir(projectName);
+                const fullPath = safeJoin(projectDir, filePath);
+                const content = document.getText('codemirror').toString();
+                if (content.length > 0 && fs.existsSync(path.dirname(fullPath))) {
+                    fs.writeFileSync(fullPath, content, 'utf-8');
+                }
+            } catch (e) {
+                logger.warn('Auto-save failed for %s: %s', documentName, e.message);
+            }
+        }, 2000));
+    },
 });
 
 // ─── AUTH & ADMIN ENDPOINTS ──────────────────────────────
@@ -1091,11 +1126,21 @@ app.post('/api/projects/:name/compile', rateLimit(30, 3600000), (req, res) => {
         const mainTexBasename = path.basename(mainTexFile);
         const compileDir = getMainTexDir(projectDir, mainTexFile);
         const pdfName = getPdfName(mainTexFile);
-        execFile('latexmk', ['-norc', '-pdf', '-synctex=1', '-interaction=nonstopmode', '-f', '-pdflatex=pdflatex --no-shell-escape %O %S', mainTexBasename], { cwd: compileDir, timeout: 120000 }, (error, stdout, stderr) => {
-            const pdfPath = path.join(compileDir, pdfName);
-            if (error && !fs.existsSync(pdfPath)) {
+        const pdfPath = path.join(compileDir, pdfName);
+        const pdfMtimeBefore = fs.existsSync(pdfPath) ? fs.statSync(pdfPath).mtimeMs : 0;
+        // Clean build artifacts that may have wrong ownership/permissions
+        const buildExts = ['.aux', '.log', '.out', '.toc', '.lof', '.lol', '.bbl', '.blg', '.fdb_latexmk', '.fls', '.synctex.gz'];
+        const baseName = path.basename(mainTexBasename, '.tex');
+        for (const ext of buildExts) {
+            const artifactPath = path.join(compileDir, baseName + ext);
+            try { if (fs.existsSync(artifactPath)) fs.unlinkSync(artifactPath); } catch (e) { /* ignore */ }
+        }
+        execFile('latexmk', ['-norc', '-pdf', '-g', '-synctex=1', '-interaction=nonstopmode', '-f', '-pdflatex=pdflatex --no-shell-escape %O %S', mainTexBasename], { cwd: compileDir, timeout: 120000 }, (error, stdout, stderr) => {
+            const pdfExists = fs.existsSync(pdfPath);
+            const pdfMtimeAfter = pdfExists ? fs.statSync(pdfPath).mtimeMs : 0;
+            const pdfUpdated = pdfMtimeAfter > pdfMtimeBefore;
+            if (error && !pdfExists) {
                 logger.error('Compilation error:', error);
-                // Return log output so users can debug their LaTeX, but strip absolute paths
                 const safeStdout = (stdout || '').replaceAll(compileDir, '.').replaceAll(projectDir, '.');
                 const safeStderr = (stderr || '').replaceAll(compileDir, '.').replaceAll(projectDir, '.');
                 return res.status(500).json({ 
@@ -1103,6 +1148,17 @@ app.post('/api/projects/:name/compile', rateLimit(30, 3600000), (req, res) => {
                     message: 'Failed to compile LaTeX',
                     stdout: safeStdout,
                     stderr: safeStderr 
+                });
+            }
+            if (error && !pdfUpdated) {
+                logger.warn('Compilation failed and PDF was not updated: %s', error.message);
+                const safeStdout = (stdout || '').replaceAll(compileDir, '.').replaceAll(projectDir, '.');
+                const safeStderr = (stderr || '').replaceAll(compileDir, '.').replaceAll(projectDir, '.');
+                return res.status(500).json({
+                    success: false,
+                    message: 'Compilation failed — PDF was not updated',
+                    stdout: safeStdout,
+                    stderr: safeStderr
                 });
             }
             if (error) logger.warn('Compilation completed with warnings: %s', error.message);
@@ -1126,6 +1182,9 @@ app.get('/api/projects/:name/pdf', (req, res) => {
         const compileDir = getMainTexDir(projectDir, mainTexFile);
         const pdfPath = path.join(compileDir, getPdfName(mainTexFile));
         if (fs.existsSync(pdfPath)) {
+            res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+            res.set('Pragma', 'no-cache');
+            res.set('Expires', '0');
             res.sendFile(pdfPath);
         } else {
             res.status(404).send('PDF not found');
